@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- `lotl vault export` — derives `~/.local/share/lotl/vault/<scope>/entities/*.md` + `inbox.md` from the KG. Atomic writes via `<scope>/.tmp/` + rename. Per-scope hash gate skips no-op exports. Flags: `--scope`, `--force`.
+- `lotl vault status` — prints vault root + per-scope KG row count + last export timestamp + hash + whether the vault dir exists.
+- `src/vault/templates.ts` + `src/vault/export.ts` — pure renderers + SQLite-backed exporter with 100% line/branch coverage.
+
+### Configuration
+
+- `LOTL_VAULT_PATH` — overrides default `~/.local/share/lotl/vault`.
+
 ## [1.0.3] - 2026-04-25
 
 ### Fixed
