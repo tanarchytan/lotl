@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm, writeFile, readFile, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, readFile, mkdir, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
@@ -11,6 +11,9 @@ import {
   listScopes,
   collectEntityFacts,
   collectOrphanMemories,
+  exportScope,
+  exportAllScopes,
+  vaultStatus,
 } from "../../src/vault/export.js";
 
 let tmp: string;
@@ -289,5 +292,141 @@ describe("writeScopeAtomically", () => {
         },
       }),
     ).rejects.toThrow(/empty entity slug/);
+  });
+});
+
+describe("exportScope", () => {
+  it("writes the full vault on first export", async () => {
+    const ds = await fixtureSource();
+    const result = await exportScope({
+      dataSource: ds,
+      scope: "global",
+      vaultRoot: tmp,
+      now: () => "2026-05-20T12:00:00Z",
+    });
+    expect(result.skipped).toBe(false);
+    expect(result.entityCount).toBe(4);
+    expect(result.memoryCount).toBe(3);
+    const dir = join(tmp, "global");
+    const files = (await readdir(join(dir, "entities"))).sort();
+    expect(files).toEqual(["antwerp.md", "david.md", "ghent.md", "lotl.md"]);
+  });
+
+  it("is a no-op on the second run when KG hash unchanged", async () => {
+    const ds = await fixtureSource();
+    await exportScope({
+      dataSource: ds,
+      scope: "global",
+      vaultRoot: tmp,
+      now: () => "2026-05-20T12:00:00Z",
+    });
+    const second = await exportScope({
+      dataSource: ds,
+      scope: "global",
+      vaultRoot: tmp,
+      now: () => "2026-05-20T13:00:00Z",
+    });
+    expect(second.skipped).toBe(true);
+  });
+
+  it("force: true rewrites the vault even when the hash matches", async () => {
+    const ds = await fixtureSource();
+    await exportScope({
+      dataSource: ds,
+      scope: "global",
+      vaultRoot: tmp,
+      now: () => "2026-05-20T12:00:00Z",
+    });
+    const forced = await exportScope({
+      dataSource: ds,
+      scope: "global",
+      vaultRoot: tmp,
+      now: () => "2026-05-20T13:00:00Z",
+      force: true,
+    });
+    expect(forced.skipped).toBe(false);
+    const meta = JSON.parse(
+      await readFile(join(tmp, "global", ".lotl-export.json"), "utf8"),
+    );
+    expect(meta.exported_at).toBe("2026-05-20T13:00:00Z");
+  });
+
+  it("treats a corrupt .lotl-export.json as 'no metadata' and rebuilds", async () => {
+    const ds = await fixtureSource();
+    await mkdir(join(tmp, "global"), { recursive: true });
+    await writeFile(join(tmp, "global", ".lotl-export.json"), "}}}not-json");
+    const result = await exportScope({
+      dataSource: ds,
+      scope: "global",
+      vaultRoot: tmp,
+      now: () => "2026-05-20T12:00:00Z",
+    });
+    expect(result.skipped).toBe(false);
+  });
+
+  it("disambiguates colliding slugs via the scope prefix", async () => {
+    const ds = loadFixtureDataSource({
+      triples: [
+        { id: "a", subject: "Same Name", predicate: "p", object: "X", valid_from: "2026-01-01T00:00:00Z", valid_until: null, source_memory_id: null, scope: "global", created_at: "2026-01-01T00:00:00Z" },
+        { id: "b", subject: "Same  Name", predicate: "q", object: "Y", valid_from: "2026-01-02T00:00:00Z", valid_until: null, source_memory_id: null, scope: "global", created_at: "2026-01-02T00:00:00Z" },
+      ],
+      memories: [],
+    });
+    await exportScope({
+      dataSource: ds,
+      scope: "global",
+      vaultRoot: tmp,
+      now: () => "2026-05-20T12:00:00Z",
+    });
+    const files = (await readdir(join(tmp, "global", "entities"))).sort();
+    expect(files.length).toBe(2);
+    expect(files).toContain("same_name.md");
+    expect(files.some((f) => f.startsWith("global-same_name"))).toBe(true);
+  });
+});
+
+describe("exportAllScopes", () => {
+  it("exports every scope returned by the data source", async () => {
+    const ds = await fixtureSource();
+    const summary = await exportAllScopes({
+      dataSource: ds,
+      vaultRoot: tmp,
+      now: () => "2026-05-20T12:00:00Z",
+    });
+    expect(Object.keys(summary).sort()).toEqual(["global", "project-foo"]);
+    expect(summary["global"]!.skipped).toBe(false);
+    expect(summary["project-foo"]!.skipped).toBe(false);
+  });
+
+  it("scoping to one scope ignores the others", async () => {
+    const ds = await fixtureSource();
+    const summary = await exportAllScopes({
+      dataSource: ds,
+      vaultRoot: tmp,
+      onlyScope: "project-foo",
+      now: () => "2026-05-20T12:00:00Z",
+    });
+    expect(Object.keys(summary)).toEqual(["project-foo"]);
+  });
+});
+
+describe("vaultStatus", () => {
+  it("reports per-scope kg_count, last_export_at, hash, vault_dir_present", async () => {
+    const ds = await fixtureSource();
+    await exportScope({
+      dataSource: ds,
+      scope: "global",
+      vaultRoot: tmp,
+      now: () => "2026-05-20T12:00:00Z",
+    });
+    const status = await vaultStatus({ dataSource: ds, vaultRoot: tmp });
+    expect(status.vault_root).toBe(tmp);
+    const global = status.scopes.find((s) => s.scope === "global")!;
+    expect(global.kg_count).toBe(8);
+    expect(global.last_export_at).toBe("2026-05-20T12:00:00Z");
+    expect(global.vault_dir_present).toBe(true);
+    const projectFoo = status.scopes.find((s) => s.scope === "project-foo")!;
+    expect(projectFoo.vault_dir_present).toBe(false);
+    expect(projectFoo.last_export_at).toBeNull();
   });
 });

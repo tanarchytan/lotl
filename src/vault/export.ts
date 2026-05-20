@@ -4,9 +4,9 @@
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { mkdir, writeFile, rename, rm } from "node:fs/promises";
+import { mkdir, writeFile, rename, rm, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { sanitizeScope } from "./templates.js";
+import { sanitizeScope, disambiguateSlug, renderEntityPage, renderInboxPage, slugForSubject } from "./templates.js";
 import type { EntityFact, InboxMemory, LinkedMemory } from "./templates.js";
 
 export function resolveVaultRoot(
@@ -310,4 +310,155 @@ export async function readScopeMetadata(
   } catch {
     return null;
   }
+}
+
+export interface ExportOptions {
+  dataSource: VaultDataSource;
+  scope: string;
+  vaultRoot: string;
+  force?: boolean;
+  now?: () => string;
+}
+
+export interface ExportResult {
+  skipped: boolean;
+  entityCount: number;
+  memoryCount: number;
+  hash: string;
+}
+
+function defaultNow(): string {
+  return new Date().toISOString();
+}
+
+export async function exportScope(opts: ExportOptions): Promise<ExportResult> {
+  const { dataSource, scope, vaultRoot, force = false } = opts;
+  const now = opts.now ?? defaultNow;
+
+  const kgCount = await dataSource.kgCount(scope);
+  const maxUpdatedAt = await dataSource.maxUpdatedAt(scope);
+  const hash = computeScopeHash(kgCount, maxUpdatedAt);
+
+  const dir = scopeDir(vaultRoot, scope);
+  const prior = await readScopeMetadata(dir);
+  if (!force && prior && prior.hash === hash) {
+    return { skipped: true, entityCount: 0, memoryCount: 0, hash };
+  }
+
+  const entityGroups = await collectEntityFacts(dataSource, scope);
+  const orphanMemories = await collectOrphanMemories(dataSource, scope);
+
+  const taken = new Set<string>();
+  const renderedEntities: { slug: string; body: string }[] = [];
+  for (const group of entityGroups) {
+    const baseSlug = slugForSubject(group.subject);
+    const slug = disambiguateSlug(baseSlug, scope, taken);
+    taken.add(slug);
+    renderedEntities.push({
+      slug,
+      body: renderEntityPage({
+        subject: group.subject,
+        scope: group.scope,
+        facts: group.facts,
+        linkedMemories: group.linkedMemories,
+      }),
+    });
+  }
+
+  const inboxBody = renderInboxPage({
+    scope,
+    generated_at: now(),
+    memories: orphanMemories,
+  });
+
+  const metadata: ScopeExportMetadata = {
+    schema_version: 1,
+    exported_at: now(),
+    scope,
+    kg_count: kgCount,
+    memory_count: orphanMemories.length,
+    hash,
+  };
+
+  await writeScopeAtomically(dir, {
+    entities: renderedEntities,
+    inbox: inboxBody,
+    metadata,
+  });
+
+  return {
+    skipped: false,
+    entityCount: renderedEntities.length,
+    memoryCount: orphanMemories.length,
+    hash,
+  };
+}
+
+export interface ExportAllOptions {
+  dataSource: VaultDataSource;
+  vaultRoot: string;
+  onlyScope?: string;
+  force?: boolean;
+  now?: () => string;
+}
+
+export async function exportAllScopes(
+  opts: ExportAllOptions,
+): Promise<Record<string, ExportResult>> {
+  const allScopes = await opts.dataSource.listScopes();
+  const scopes = opts.onlyScope
+    ? allScopes.filter((s) => s === opts.onlyScope)
+    : allScopes;
+  const summary: Record<string, ExportResult> = {};
+  for (const scope of scopes) {
+    summary[scope] = await exportScope({
+      dataSource: opts.dataSource,
+      scope,
+      vaultRoot: opts.vaultRoot,
+      force: opts.force,
+      now: opts.now,
+    });
+  }
+  return summary;
+}
+
+export interface VaultStatusScope {
+  scope: string;
+  kg_count: number;
+  last_export_at: string | null;
+  hash: string | null;
+  vault_dir_present: boolean;
+}
+
+export interface VaultStatusReport {
+  vault_root: string;
+  scopes: VaultStatusScope[];
+}
+
+export async function vaultStatus(opts: {
+  dataSource: VaultDataSource;
+  vaultRoot: string;
+}): Promise<VaultStatusReport> {
+  const { dataSource, vaultRoot } = opts;
+  const kgScopes = await dataSource.listScopes();
+  const onDiskScopes = existsSync(vaultRoot)
+    ? (await readdir(vaultRoot, { withFileTypes: true }))
+        .filter((d) => d.isDirectory())
+        .map((d) => d.name)
+    : [];
+
+  const merged = new Set<string>([...kgScopes, ...onDiskScopes]);
+  const rows: VaultStatusScope[] = [];
+  for (const scope of Array.from(merged).sort()) {
+    const dir = scopeDir(vaultRoot, scope);
+    const meta = await readScopeMetadata(dir);
+    rows.push({
+      scope,
+      kg_count: kgScopes.includes(scope) ? await dataSource.kgCount(scope) : 0,
+      last_export_at: meta?.exported_at ?? null,
+      hash: meta?.hash ?? null,
+      vault_dir_present: existsSync(dir),
+    });
+  }
+  return { vault_root: vaultRoot, scopes: rows };
 }
