@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { renderEntityPage } from "../../src/vault/templates.js";
+import { renderEntityPage, renderInboxPage } from "../../src/vault/templates.js";
 
 const baseInput = {
   subject: "David Gillot",
@@ -147,5 +147,109 @@ describe("renderEntityPage", () => {
     expect(md).toContain('title: "broken name"');
     // Heading should be on a single line
     expect(md).toMatch(/\n# broken name\n/);
+  });
+});
+
+describe("renderInboxPage", () => {
+  const mems = [
+    {
+      memory_id: "core01aaaa",
+      created_at: "2026-05-19T10:00:00Z",
+      importance: 0.85,
+      excerpt: "Hard fact",
+    },
+    {
+      memory_id: "core02bbbb",
+      created_at: "2026-05-20T10:00:00Z",
+      importance: 0.95,
+      excerpt: "Newer hard fact",
+    },
+    {
+      memory_id: "work01cccc",
+      created_at: "2026-05-15T10:00:00Z",
+      importance: 0.5,
+      excerpt: "Soft fact",
+    },
+    {
+      memory_id: "per01ddddd",
+      created_at: "2026-05-10T10:00:00Z",
+      importance: 0.05,
+      excerpt: "Noise",
+    },
+  ];
+
+  it("emits frontmatter with scope, count, generated_at", () => {
+    const md = renderInboxPage({
+      scope: "global",
+      generated_at: "2026-05-20T12:00:00Z",
+      memories: mems,
+    });
+    expect(md).toMatch(/^---\n/);
+    expect(md).toContain('title: "Inbox — global"');
+    expect(md).toContain("type: inbox");
+    expect(md).toContain('scope: "global"');
+    expect(md).toContain("count: 4");
+    expect(md).toContain('generated_at: "2026-05-20T12:00:00Z"');
+  });
+
+  it("groups memories by tier with the right thresholds", () => {
+    const md = renderInboxPage({
+      scope: "global",
+      generated_at: "2026-05-20T12:00:00Z",
+      memories: mems,
+    });
+    expect(md).toContain("## core (importance >= 0.7)");
+    expect(md).toContain("## working (importance >= 0.3)");
+    expect(md).toContain("## peripheral (importance >= 0)");
+  });
+
+  it("sorts within tier by created_at desc", () => {
+    const md = renderInboxPage({
+      scope: "global",
+      generated_at: "2026-05-20T12:00:00Z",
+      memories: mems,
+    });
+    const idxNewer = md.indexOf("Newer hard fact");
+    const idxOlder = md.indexOf("Hard fact");
+    expect(idxNewer).toBeGreaterThan(-1);
+    expect(idxOlder).toBeGreaterThan(idxNewer);
+  });
+
+  it("truncates excerpts at 200 chars and emits short id suffix", () => {
+    const long = "y".repeat(250);
+    const md = renderInboxPage({
+      scope: "global",
+      generated_at: "2026-05-20T12:00:00Z",
+      memories: [
+        {
+          memory_id: "longidaaaa",
+          created_at: "2026-05-20T10:00:00Z",
+          importance: 0.95,
+          excerpt: long,
+        },
+      ],
+    });
+    expect(md).toContain(`${"y".repeat(200)}... \`#longidaa\``);
+  });
+
+  it("omits a tier section when it has zero memories", () => {
+    const md = renderInboxPage({
+      scope: "global",
+      generated_at: "2026-05-20T12:00:00Z",
+      memories: [mems[0]!],
+    });
+    expect(md).toContain("## core");
+    expect(md).not.toContain("## working");
+    expect(md).not.toContain("## peripheral");
+  });
+
+  it("renders an empty-state line when there are zero memories", () => {
+    const md = renderInboxPage({
+      scope: "global",
+      generated_at: "2026-05-20T12:00:00Z",
+      memories: [],
+    });
+    expect(md).toContain("count: 0");
+    expect(md).toContain("*no orphan memories*");
   });
 });

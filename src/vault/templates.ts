@@ -139,3 +139,76 @@ export function renderEntityPage(input: EntityPageInput): string {
 
   return `${lines.join("\n").replace(/\n+$/, "")}\n`;
 }
+
+export type InboxTier = "core" | "working" | "peripheral";
+
+export interface InboxMemory {
+  memory_id: string;
+  created_at: string;
+  importance: number;
+  excerpt: string;
+}
+
+export interface InboxPageInput {
+  scope: string;
+  generated_at: string;
+  memories: InboxMemory[];
+}
+
+export const TIER_THRESHOLDS: Record<InboxTier, number> = {
+  core: 0.7,
+  working: 0.3,
+  peripheral: 0,
+};
+
+export function classifyTier(importance: number): InboxTier {
+  if (importance >= TIER_THRESHOLDS.core) return "core";
+  if (importance >= TIER_THRESHOLDS.working) return "working";
+  return "peripheral";
+}
+
+const TIER_ORDER: InboxTier[] = ["core", "working", "peripheral"];
+
+export function renderInboxPage(input: InboxPageInput): string {
+  const { scope, generated_at, memories } = input;
+  const lines: string[] = [];
+  lines.push("---");
+  lines.push(`title: "Inbox — ${escapeForYamlString(scope)}"`);
+  lines.push("type: inbox");
+  lines.push(`scope: "${escapeForYamlString(scope)}"`);
+  lines.push(`count: ${memories.length}`);
+  lines.push(`generated_at: "${escapeForYamlString(generated_at)}"`);
+  lines.push("---");
+  lines.push("");
+  lines.push(`# Inbox — ${scope.replace(/\r?\n/g, " ")}`);
+  lines.push("");
+  lines.push("Memories without any entity references.");
+  lines.push("");
+
+  if (memories.length === 0) {
+    lines.push("*no orphan memories*");
+    return `${lines.join("\n")}\n`;
+  }
+
+  const grouped: Record<InboxTier, InboxMemory[]> = {
+    core: [],
+    working: [],
+    peripheral: [],
+  };
+  for (const m of memories) grouped[classifyTier(m.importance)]!.push(m);
+
+  for (const tier of TIER_ORDER) {
+    const bucket = grouped[tier];
+    if (bucket.length === 0) continue;
+    bucket.sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+    lines.push(`## ${tier} (importance >= ${TIER_THRESHOLDS[tier]})`);
+    lines.push("");
+    for (const m of bucket) {
+      lines.push(
+        `- **${m.created_at}** — ${flattenAndTruncate(m.excerpt)} \`#${m.memory_id.slice(0, 8)}\``,
+      );
+    }
+    lines.push("");
+  }
+  return `${lines.join("\n").replace(/\n+$/, "")}\n`;
+}
