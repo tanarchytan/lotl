@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { mkdir, writeFile, rename, rm, readdir } from "node:fs/promises";
+import { mkdir, writeFile, rename, rm, readdir, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { sanitizeScope, disambiguateSlug, renderEntityPage, renderInboxPage, slugForSubject } from "./templates.js";
 import type { EntityFact, InboxMemory, LinkedMemory } from "./templates.js";
@@ -301,7 +301,7 @@ export async function readScopeMetadata(
   const path = join(scopeRoot, ".lotl-export.json");
   if (!existsSync(path)) return null;
   try {
-    const raw = await (await import("node:fs/promises")).readFile(path, "utf8");
+    const raw = await readFile(path, "utf8");
     return JSON.parse(raw) as ScopeExportMetadata;
   } catch {
     return null;
