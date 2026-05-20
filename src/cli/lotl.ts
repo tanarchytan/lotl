@@ -9,6 +9,7 @@ import { c, cursor, progress, useColor, isTTY, warn, success, info } from "./ter
 import { collectionList, collectionRemove, collectionRename } from "./collection-commands.js";
 import { contextAdd, contextList, contextRemove, detectCollectionFromPath } from "./context-commands.js";
 import { showSkill, installSkill } from "./skill-commands.js";
+import { runVaultCommand } from "./vault-commands.js";
 import { showHelp, showVersion } from "./help-version.js";
 import fastGlob from "fast-glob";
 import { execSync, spawn as nodeSpawn } from "child_process";
@@ -2654,6 +2655,12 @@ if (isMain) {
         process.exit(1);
       }
       closeDb();
+      break;
+    }
+
+    case "vault": {
+      const exit = await runVaultCommand(cli.args);
+      process.exit(exit);
       break;
     }
 
