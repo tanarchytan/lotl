@@ -2,11 +2,19 @@
 
 ## [Unreleased]
 
+## [1.2.0-alpha.1] - 2026-05-20
+
+First alpha of the vault export feature. Lotl now derives a human-browsable
+markdown vault from the knowledge graph — entity pages + an orphan-memory
+inbox per scope — with atomic writes and a per-scope hash gate that skips
+no-op exports. Subsystem 1 of 3 (Subsystem 2 = entity extraction in dream
+pass, Subsystem 3 = web viewer ship in subsequent alphas).
+
 ### Added
 
 - `lotl vault export` — derives `~/.local/share/lotl/vault/<scope>/entities/*.md` + `inbox.md` from the KG. Atomic writes via `<scope>/.tmp/` + rename. Per-scope hash gate skips no-op exports. Flags: `--scope`, `--force`.
 - `lotl vault status` — prints vault root + per-scope KG row count + last export timestamp + hash + whether the vault dir exists.
-- `src/vault/templates.ts` + `src/vault/export.ts` — pure renderers + SQLite-backed exporter with 100% line/branch coverage.
+- `src/vault/templates.ts` + `src/vault/export.ts` — pure renderers + SQLite-backed exporter with 100% line/branch coverage on `src/vault/**`.
 
 ### Configuration
 
