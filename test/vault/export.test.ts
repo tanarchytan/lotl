@@ -200,3 +200,94 @@ describe("createSqliteDataSource", () => {
     expect(await ds.maxUpdatedAt("does-not-exist")).toBeNull();
   });
 });
+
+describe("writeScopeAtomically", () => {
+  it("creates entities/ and inbox.md on first run", async () => {
+    const scopeRoot = join(tmp, "global");
+    await mkdir(scopeRoot, { recursive: true });
+    const { writeScopeAtomically } = await import("../../src/vault/export.js");
+    await writeScopeAtomically(scopeRoot, {
+      entities: [
+        { slug: "david", body: "# David\n" },
+        { slug: "lotl", body: "# Lotl\n" },
+      ],
+      inbox: "# Inbox\n",
+      metadata: {
+        schema_version: 1,
+        exported_at: "2026-05-20T12:00:00Z",
+        scope: "global",
+        kg_count: 12,
+        memory_count: 7,
+        hash: "abc",
+      },
+    });
+    expect(existsSync(join(scopeRoot, "entities", "david.md"))).toBe(true);
+    expect(existsSync(join(scopeRoot, "entities", "lotl.md"))).toBe(true);
+    expect(existsSync(join(scopeRoot, "inbox.md"))).toBe(true);
+    expect(existsSync(join(scopeRoot, ".lotl-export.json"))).toBe(true);
+    expect(existsSync(join(scopeRoot, ".tmp"))).toBe(false);
+  });
+
+  it("replaces an existing vault and cleans the .old-* directory on success", async () => {
+    const scopeRoot = join(tmp, "global");
+    await mkdir(join(scopeRoot, "entities"), { recursive: true });
+    await writeFile(join(scopeRoot, "entities", "stale.md"), "old");
+    await writeFile(join(scopeRoot, "inbox.md"), "old inbox");
+    await writeFile(
+      join(scopeRoot, ".lotl-export.json"),
+      JSON.stringify({ hash: "old" }),
+    );
+
+    const { writeScopeAtomically } = await import("../../src/vault/export.js");
+    await writeScopeAtomically(scopeRoot, {
+      entities: [{ slug: "fresh", body: "# Fresh\n" }],
+      inbox: "# New inbox\n",
+      metadata: {
+        schema_version: 1,
+        exported_at: "2026-05-20T12:00:00Z",
+        scope: "global",
+        kg_count: 1,
+        memory_count: 0,
+        hash: "new",
+      },
+    });
+
+    expect(existsSync(join(scopeRoot, "entities", "fresh.md"))).toBe(true);
+    expect(existsSync(join(scopeRoot, "entities", "stale.md"))).toBe(false);
+    expect((await readFile(join(scopeRoot, "inbox.md"), "utf8"))).toContain("New inbox");
+    const meta = JSON.parse(
+      await readFile(join(scopeRoot, ".lotl-export.json"), "utf8"),
+    );
+    expect(meta.hash).toBe("new");
+    const entries = await import("node:fs/promises").then((fs) =>
+      fs.readdir(scopeRoot),
+    );
+    expect(entries.some((e) => e.startsWith(".old-"))).toBe(false);
+    expect(entries.includes(".tmp")).toBe(false);
+  });
+
+  it("leaves .old-* behind when the rename step throws", async () => {
+    const scopeRoot = join(tmp, "global");
+    await mkdir(join(scopeRoot, "entities"), { recursive: true });
+    await writeFile(join(scopeRoot, "entities", "keep.md"), "stay");
+    await writeFile(join(scopeRoot, "inbox.md"), "stay");
+    await writeFile(join(scopeRoot, ".lotl-export.json"), "{}");
+
+    const { writeScopeAtomically } = await import("../../src/vault/export.js");
+    // empty slug triggers validation
+    await expect(
+      writeScopeAtomically(scopeRoot, {
+        entities: [{ slug: "", body: "" }],
+        inbox: "x",
+        metadata: {
+          schema_version: 1,
+          exported_at: "2026-05-20T12:00:00Z",
+          scope: "global",
+          kg_count: 0,
+          memory_count: 0,
+          hash: "x",
+        },
+      }),
+    ).rejects.toThrow(/empty entity slug/);
+  });
+});

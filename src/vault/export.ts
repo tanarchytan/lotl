@@ -4,6 +4,8 @@
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { mkdir, writeFile, rename, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { sanitizeScope } from "./templates.js";
 import type { EntityFact, InboxMemory, LinkedMemory } from "./templates.js";
 
@@ -225,4 +227,87 @@ export function createSqliteDataSource(
       return row.ts ?? null;
     },
   };
+}
+
+export interface ScopeExportMetadata {
+  schema_version: 1;
+  exported_at: string;
+  scope: string;
+  kg_count: number;
+  memory_count: number;
+  hash: string;
+}
+
+export interface ScopePayload {
+  entities: { slug: string; body: string }[];
+  inbox: string;
+  metadata: ScopeExportMetadata;
+}
+
+function timestampToken(): string {
+  return new Date().toISOString().replace(/[:.]/g, "-");
+}
+
+export async function writeScopeAtomically(
+  scopeRoot: string,
+  payload: ScopePayload,
+): Promise<void> {
+  for (const e of payload.entities) {
+    if (!e.slug || e.slug.length === 0) {
+      throw new Error("empty entity slug — refusing to write");
+    }
+  }
+  await mkdir(scopeRoot, { recursive: true });
+  const tmp = join(scopeRoot, ".tmp");
+  if (existsSync(tmp)) await rm(tmp, { recursive: true, force: true });
+  await mkdir(join(tmp, "entities"), { recursive: true });
+  for (const e of payload.entities) {
+    await writeFile(join(tmp, "entities", `${e.slug}.md`), e.body, "utf8");
+  }
+  await writeFile(join(tmp, "inbox.md"), payload.inbox, "utf8");
+  await writeFile(
+    join(tmp, ".lotl-export.json"),
+    `${JSON.stringify(payload.metadata, null, 2)}\n`,
+    "utf8",
+  );
+
+  const ts = timestampToken();
+  const oldEntities = join(scopeRoot, `.old-entities-${ts}`);
+  const oldInbox = join(scopeRoot, `.old-inbox-${ts}.md`);
+  const oldMeta = join(scopeRoot, `.old-export-${ts}.json`);
+
+  if (existsSync(join(scopeRoot, "entities"))) {
+    await rename(join(scopeRoot, "entities"), oldEntities);
+  }
+  if (existsSync(join(scopeRoot, "inbox.md"))) {
+    await rename(join(scopeRoot, "inbox.md"), oldInbox);
+  }
+  if (existsSync(join(scopeRoot, ".lotl-export.json"))) {
+    await rename(join(scopeRoot, ".lotl-export.json"), oldMeta);
+  }
+
+  await rename(join(tmp, "entities"), join(scopeRoot, "entities"));
+  await rename(join(tmp, "inbox.md"), join(scopeRoot, "inbox.md"));
+  await rename(
+    join(tmp, ".lotl-export.json"),
+    join(scopeRoot, ".lotl-export.json"),
+  );
+  await rm(tmp, { recursive: true, force: true });
+
+  for (const stale of [oldEntities, oldInbox, oldMeta]) {
+    if (existsSync(stale)) await rm(stale, { recursive: true, force: true });
+  }
+}
+
+export async function readScopeMetadata(
+  scopeRoot: string,
+): Promise<ScopeExportMetadata | null> {
+  const path = join(scopeRoot, ".lotl-export.json");
+  if (!existsSync(path)) return null;
+  try {
+    const raw = await (await import("node:fs/promises")).readFile(path, "utf8");
+    return JSON.parse(raw) as ScopeExportMetadata;
+  } catch {
+    return null;
+  }
 }
