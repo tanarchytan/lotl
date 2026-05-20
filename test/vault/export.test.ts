@@ -7,6 +7,10 @@ import {
   resolveVaultRoot,
   computeScopeHash,
   scopeDir,
+  loadFixtureDataSource,
+  listScopes,
+  collectEntityFacts,
+  collectOrphanMemories,
 } from "../../src/vault/export.js";
 
 let tmp: string;
@@ -64,5 +68,57 @@ describe("computeScopeHash", () => {
 
   it("accepts null max_updated_at (empty scope)", () => {
     expect(computeScopeHash(0, null)).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+async function fixtureSource() {
+  const raw = await readFile(
+    join(process.cwd(), "test/fixtures/vault-kg.json"),
+    "utf8",
+  );
+  return loadFixtureDataSource(JSON.parse(raw) as never);
+}
+
+describe("VaultDataSource (fixture loader)", () => {
+  it("listScopes returns both seeded scopes", async () => {
+    const ds = await fixtureSource();
+    const scopes = await ds.listScopes();
+    expect(scopes.sort()).toEqual(["global", "project-foo"]);
+  });
+
+  it("collectEntityFacts groups triples by subject within a scope", async () => {
+    const ds = await fixtureSource();
+    const entities = await collectEntityFacts(ds, "global");
+    const names = entities.map((e) => e.subject).sort();
+    expect(names).toEqual(["Antwerp", "David", "Ghent", "Lotl"]);
+    const david = entities.find((e) => e.subject === "David")!;
+    expect(david.facts.length).toBe(4);
+    expect(david.facts.some((f) => f.predicate === "lives_in" && f.object === "Ghent" && f.valid_until === null)).toBe(true);
+    expect(david.facts.some((f) => f.predicate === "lives_in" && f.object === "Antwerp" && f.valid_until !== null)).toBe(true);
+  });
+
+  it("collectOrphanMemories returns only memories not referenced by any triple", async () => {
+    const ds = await fixtureSource();
+    const orphans = await collectOrphanMemories(ds, "global");
+    const ids = orphans.map((m) => m.memory_id).sort();
+    expect(ids).toEqual(["m_orphan_1", "m_orphan_2", "m_orphan_3"]);
+  });
+
+  it("scope filter applies to orphans too", async () => {
+    const ds = await fixtureSource();
+    const orphans = await collectOrphanMemories(ds, "project-foo");
+    expect(orphans.map((m) => m.memory_id)).toEqual(["m_orphan_4"]);
+  });
+
+  it("max_updated_at returns the latest valid_from/valid_until timestamp in the scope", async () => {
+    const ds = await fixtureSource();
+    const ts = await ds.maxUpdatedAt("global");
+    expect(ts).toBe("2026-01-15T10:00:00Z");
+  });
+
+  it("kgCount returns the number of triples in the scope", async () => {
+    const ds = await fixtureSource();
+    expect(await ds.kgCount("global")).toBe(8);
+    expect(await ds.kgCount("project-foo")).toBe(4);
   });
 });
