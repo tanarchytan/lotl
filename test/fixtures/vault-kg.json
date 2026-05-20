@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "triples": [
+    { "id": "t01", "subject": "David", "predicate": "works_on", "object": "Lotl", "valid_from": "2026-01-15T10:00:00Z", "valid_until": null, "confidence": 0.95, "source_memory_id": "m001", "scope": "global", "created_at": "2026-01-15T10:00:00Z" },
+    { "id": "t02", "subject": "David", "predicate": "lives_in", "object": "Antwerp", "valid_from": "2024-06-01T00:00:00Z", "valid_until": "2025-12-31T00:00:00Z", "confidence": 0.9, "source_memory_id": "m002", "scope": "global", "created_at": "2024-06-01T00:00:00Z" },
+    { "id": "t03", "subject": "David", "predicate": "lives_in", "object": "Ghent", "valid_from": "2026-01-01T00:00:00Z", "valid_until": null, "confidence": 0.9, "source_memory_id": "m003", "scope": "global", "created_at": "2026-01-01T00:00:00Z" },
+    { "id": "t04", "subject": "Lotl", "predicate": "written_in", "object": "TypeScript", "valid_from": "2024-01-01T00:00:00Z", "valid_until": null, "confidence": 0.99, "source_memory_id": "m004", "scope": "global", "created_at": "2024-01-01T00:00:00Z" },
+    { "id": "t05", "subject": "Lotl", "predicate": "uses", "object": "SQLite", "valid_from": "2024-01-01T00:00:00Z", "valid_until": null, "confidence": 0.99, "source_memory_id": "m004", "scope": "global", "created_at": "2024-01-01T00:00:00Z" },
+    { "id": "t06", "subject": "Antwerp", "predicate": "is_a", "object": "City", "valid_from": "2024-06-01T00:00:00Z", "valid_until": null, "confidence": 0.95, "source_memory_id": null, "scope": "global", "created_at": "2024-06-01T00:00:00Z" },
+    { "id": "t07", "subject": "Ghent", "predicate": "is_a", "object": "City", "valid_from": "2026-01-01T00:00:00Z", "valid_until": null, "confidence": 0.95, "source_memory_id": null, "scope": "global", "created_at": "2026-01-01T00:00:00Z" },
+    { "id": "t08", "subject": "ProjectFoo", "predicate": "owned_by", "object": "David", "valid_from": "2025-09-01T00:00:00Z", "valid_until": null, "confidence": 0.9, "source_memory_id": "m005", "scope": "project-foo", "created_at": "2025-09-01T00:00:00Z" },
+    { "id": "t09", "subject": "ProjectFoo", "predicate": "status", "object": "Active", "valid_from": "2025-09-01T00:00:00Z", "valid_until": "2026-03-01T00:00:00Z", "confidence": 0.8, "source_memory_id": "m005", "scope": "project-foo", "created_at": "2025-09-01T00:00:00Z" },
+    { "id": "t10", "subject": "ProjectFoo", "predicate": "status", "object": "Shipped", "valid_from": "2026-03-01T00:00:00Z", "valid_until": null, "confidence": 0.9, "source_memory_id": "m006", "scope": "project-foo", "created_at": "2026-03-01T00:00:00Z" },
+    { "id": "t11", "subject": "David", "predicate": "owns", "object": "ProjectFoo", "valid_from": "2025-09-01T00:00:00Z", "valid_until": null, "confidence": 0.85, "source_memory_id": "m005", "scope": "project-foo", "created_at": "2025-09-01T00:00:00Z" },
+    { "id": "t12", "subject": "David", "predicate": "favourite_lang", "object": "TypeScript", "valid_from": "2024-01-01T00:00:00Z", "valid_until": null, "confidence": 0.7, "source_memory_id": "m004", "scope": "global", "created_at": "2024-01-01T00:00:00Z" }
+  ],
+  "memories": [
+    { "id": "m001", "scope": "global", "text": "David works on Lotl since Jan 2026.", "importance": 0.85, "created_at": "2026-01-15T10:00:00Z" },
+    { "id": "m002", "scope": "global", "text": "David used to live in Antwerp until end of 2025.", "importance": 0.4, "created_at": "2024-06-01T00:00:00Z" },
+    { "id": "m003", "scope": "global", "text": "David moved to Ghent in 2026.", "importance": 0.6, "created_at": "2026-01-01T00:00:00Z" },
+    { "id": "m004", "scope": "global", "text": "Lotl is written in TypeScript and uses SQLite.", "importance": 0.9, "created_at": "2024-01-01T00:00:00Z" },
+    { "id": "m005", "scope": "project-foo", "text": "ProjectFoo owned by David.", "importance": 0.75, "created_at": "2025-09-01T00:00:00Z" },
+    { "id": "m006", "scope": "project-foo", "text": "ProjectFoo shipped.", "importance": 0.9, "created_at": "2026-03-01T00:00:00Z" },
+    { "id": "m_orphan_1", "scope": "global", "text": "Today I drank coffee and felt slightly more alive than usual, an unremarkable yet warm experience.", "importance": 0.05, "created_at": "2026-05-10T10:00:00Z" },
+    { "id": "m_orphan_2", "scope": "global", "text": "Reminder: renew passport before September.", "importance": 0.5, "created_at": "2026-05-15T10:00:00Z" },
+    { "id": "m_orphan_3", "scope": "global", "text": "Critical: backup encryption key is in 1Password vault 'longterm'.", "importance": 0.9, "created_at": "2026-05-18T10:00:00Z" },
+    { "id": "m_orphan_4", "scope": "project-foo", "text": "Need to write a post-mortem for ProjectFoo shipping.", "importance": 0.7, "created_at": "2026-04-01T10:00:00Z" }
+  ]
+}
