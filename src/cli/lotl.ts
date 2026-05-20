@@ -2081,7 +2081,9 @@ if (isMain) {
     process.exit(0);
   }
 
-  if (!cli.command || cli.values.help) {
+  // Skip early help-check for commands that handle their own help
+  const handleOwnHelp = ["vault"];
+  if (!cli.command || (cli.values.help && !handleOwnHelp.includes(cli.command))) {
     showHelp();
     process.exit(cli.values.help ? 0 : 1);
   }
