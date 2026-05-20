@@ -176,3 +176,53 @@ export function loadFixtureDataSource(payload: FixturePayload): VaultDataSource 
 export async function listScopes(ds: VaultDataSource): Promise<string[]> {
   return ds.listScopes();
 }
+
+import type { Database as BetterSqlite3Database } from "better-sqlite3";
+
+export function createSqliteDataSource(
+  db: BetterSqlite3Database,
+): VaultDataSource {
+  return {
+    async listScopes() {
+      const rows = db
+        .prepare("SELECT DISTINCT scope FROM knowledge ORDER BY scope")
+        .all() as { scope: string }[];
+      return rows.map((r) => r.scope);
+    },
+    async triplesForScope(scope) {
+      return db
+        .prepare(
+          `SELECT id, subject, predicate, object, valid_from, valid_until,
+                  source_memory_id, scope, created_at
+             FROM knowledge WHERE scope = ?`,
+        )
+        .all(scope) as RawTriple[];
+    },
+    async memoriesForScope(scope) {
+      return db
+        .prepare(
+          `SELECT id, scope, text, importance, created_at
+             FROM memories WHERE scope = ?`,
+        )
+        .all(scope) as RawMemory[];
+    },
+    async kgCount(scope) {
+      const row = db
+        .prepare("SELECT COUNT(*) AS n FROM knowledge WHERE scope = ?")
+        .get(scope) as { n: number };
+      return row.n;
+    },
+    async maxUpdatedAt(scope) {
+      const row = db
+        .prepare(
+          `SELECT MAX(ts) AS ts FROM (
+             SELECT valid_from AS ts FROM knowledge WHERE scope = ?
+             UNION ALL
+             SELECT valid_until AS ts FROM knowledge WHERE scope = ? AND valid_until IS NOT NULL
+           )`,
+        )
+        .get(scope, scope) as { ts: string | null };
+      return row.ts ?? null;
+    },
+  };
+}

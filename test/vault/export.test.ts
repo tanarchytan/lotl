@@ -122,3 +122,81 @@ describe("VaultDataSource (fixture loader)", () => {
     expect(await ds.kgCount("project-foo")).toBe(4);
   });
 });
+
+import Database from "better-sqlite3";
+import { createSqliteDataSource } from "../../src/vault/export.js";
+
+describe("createSqliteDataSource", () => {
+  function seed(): Database.Database {
+    const db = new Database(":memory:");
+    db.exec(`
+      CREATE TABLE knowledge (
+        id TEXT PRIMARY KEY,
+        subject TEXT NOT NULL,
+        predicate TEXT NOT NULL,
+        object TEXT NOT NULL,
+        valid_from TEXT NOT NULL,
+        valid_until TEXT,
+        source_memory_id TEXT,
+        scope TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE memories (
+        id TEXT PRIMARY KEY,
+        scope TEXT NOT NULL,
+        text TEXT NOT NULL,
+        importance REAL NOT NULL,
+        created_at TEXT NOT NULL
+      );
+    `);
+    const t = db.prepare(
+      "INSERT INTO knowledge VALUES (?,?,?,?,?,?,?,?,?)",
+    );
+    t.run("t1", "David", "works_on", "Lotl", "2026-01-15T10:00:00Z", null, "m1", "global", "2026-01-15T10:00:00Z");
+    t.run("t2", "Lotl", "uses", "SQLite", "2024-01-01T00:00:00Z", null, "m2", "global", "2024-01-01T00:00:00Z");
+    const m = db.prepare("INSERT INTO memories VALUES (?,?,?,?,?)");
+    m.run("m1", "global", "David works on Lotl.", 0.9, "2026-01-15T10:00:00Z");
+    m.run("m2", "global", "Lotl uses SQLite.", 0.8, "2024-01-01T00:00:00Z");
+    m.run("m3", "global", "Orphan note.", 0.4, "2026-05-01T00:00:00Z");
+    return db;
+  }
+
+  it("listScopes returns distinct scopes from knowledge", async () => {
+    const db = seed();
+    const ds = createSqliteDataSource(db);
+    expect(await ds.listScopes()).toEqual(["global"]);
+  });
+
+  it("triplesForScope returns triples with the right shape", async () => {
+    const db = seed();
+    const ds = createSqliteDataSource(db);
+    const triples = await ds.triplesForScope("global");
+    expect(triples.length).toBe(2);
+    expect(triples[0]!.subject).toBe("David");
+  });
+
+  it("memoriesForScope returns all memories in scope", async () => {
+    const db = seed();
+    const ds = createSqliteDataSource(db);
+    const memories = await ds.memoriesForScope("global");
+    expect(memories.length).toBe(3);
+  });
+
+  it("kgCount returns the row count", async () => {
+    const db = seed();
+    const ds = createSqliteDataSource(db);
+    expect(await ds.kgCount("global")).toBe(2);
+  });
+
+  it("maxUpdatedAt returns the latest timestamp (valid_from or valid_until)", async () => {
+    const db = seed();
+    const ds = createSqliteDataSource(db);
+    expect(await ds.maxUpdatedAt("global")).toBe("2026-01-15T10:00:00Z");
+  });
+
+  it("maxUpdatedAt returns null for empty scope", async () => {
+    const db = seed();
+    const ds = createSqliteDataSource(db);
+    expect(await ds.maxUpdatedAt("does-not-exist")).toBeNull();
+  });
+});
