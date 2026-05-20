@@ -8,7 +8,6 @@ import {
   computeScopeHash,
   scopeDir,
   loadFixtureDataSource,
-  listScopes,
   collectEntityFacts,
   collectOrphanMemories,
   exportScope,
@@ -107,6 +106,24 @@ describe("VaultDataSource (fixture loader)", () => {
     expect(ids).toEqual(["m_orphan_1", "m_orphan_2", "m_orphan_3"]);
   });
 
+  it("collectEntityFacts skips duplicate facts and missing linked memories", async () => {
+    const ds = loadFixtureDataSource({
+      triples: [
+        { id: "t1", subject: "A", predicate: "p", object: "X", valid_from: "2026-01-01T00:00:00Z", valid_until: null, source_memory_id: "m1", scope: "global", created_at: "2026-01-01T00:00:00Z" },
+        { id: "t2", subject: "A", predicate: "p", object: "X", valid_from: "2026-01-01T00:00:00Z", valid_until: null, source_memory_id: null, scope: "global", created_at: "2026-01-01T00:00:00Z" },
+        { id: "t3", subject: "A", predicate: "q", object: "Y", valid_from: "2026-01-02T00:00:00Z", valid_until: null, source_memory_id: "m_missing", scope: "global", created_at: "2026-01-02T00:00:00Z" },
+      ],
+      memories: [
+        { id: "m1", scope: "global", text: "Found memory", importance: 0.9, created_at: "2026-01-01T00:00:00Z" },
+      ],
+    });
+    const entities = await collectEntityFacts(ds, "global");
+    const a = entities.find((e) => e.subject === "A")!;
+    expect(a.facts.length).toBe(2);
+    expect(a.linkedMemories.length).toBe(1);
+    expect(a.linkedMemories[0]!.memory_id).toBe("m1");
+  });
+
   it("scope filter applies to orphans too", async () => {
     const ds = await fixtureSource();
     const orphans = await collectOrphanMemories(ds, "project-foo");
@@ -117,6 +134,18 @@ describe("VaultDataSource (fixture loader)", () => {
     const ds = await fixtureSource();
     const ts = await ds.maxUpdatedAt("global");
     expect(ts).toBe("2026-01-15T10:00:00Z");
+  });
+
+  it("max_updated_at includes valid_until timestamps when they exist", async () => {
+    const ds = loadFixtureDataSource({
+      triples: [
+        { id: "t1", subject: "A", predicate: "p", object: "X", valid_from: "2026-01-01T00:00:00Z", valid_until: "2026-02-01T00:00:00Z", source_memory_id: null, scope: "global", created_at: "2026-01-01T00:00:00Z" },
+        { id: "t2", subject: "B", predicate: "q", object: "Y", valid_from: "2026-01-10T00:00:00Z", valid_until: null, source_memory_id: null, scope: "global", created_at: "2026-01-10T00:00:00Z" },
+      ],
+      memories: [],
+    });
+    const ts = await ds.maxUpdatedAt("global");
+    expect(ts).toBe("2026-02-01T00:00:00Z");
   });
 
   it("kgCount returns the number of triples in the scope", async () => {
@@ -201,6 +230,16 @@ describe("createSqliteDataSource", () => {
     const db = seed();
     const ds = createSqliteDataSource(db);
     expect(await ds.maxUpdatedAt("does-not-exist")).toBeNull();
+  });
+
+  it("loadFixtureDataSource maxUpdatedAt returns null when scope has no triples", async () => {
+    const ds = loadFixtureDataSource({
+      triples: [
+        { id: "t1", subject: "A", predicate: "p", object: "X", valid_from: "2026-01-01T00:00:00Z", valid_until: null, source_memory_id: null, scope: "scope-a", created_at: "2026-01-01T00:00:00Z" },
+      ],
+      memories: [],
+    });
+    expect(await ds.maxUpdatedAt("scope-b")).toBeNull();
   });
 });
 
@@ -293,6 +332,41 @@ describe("writeScopeAtomically", () => {
       }),
     ).rejects.toThrow(/empty entity slug/);
   });
+
+  it("cleans up stale .tmp directory before writing on second run", async () => {
+    const scopeRoot = join(tmp, "global");
+    const { writeScopeAtomically } = await import("../../src/vault/export.js");
+    await writeScopeAtomically(scopeRoot, {
+      entities: [{ slug: "a", body: "# A\n" }],
+      inbox: "# Inbox\n",
+      metadata: {
+        schema_version: 1,
+        exported_at: "2026-05-20T12:00:00Z",
+        scope: "global",
+        kg_count: 1,
+        memory_count: 0,
+        hash: "abc",
+      },
+    });
+    const tmpDir = join(scopeRoot, ".tmp");
+    expect(existsSync(tmpDir)).toBe(false);
+    await mkdir(tmpDir, { recursive: true });
+    await writeFile(join(tmpDir, "stale.txt"), "old");
+    expect(existsSync(join(tmpDir, "stale.txt"))).toBe(true);
+    await writeScopeAtomically(scopeRoot, {
+      entities: [{ slug: "b", body: "# B\n" }],
+      inbox: "# Inbox 2\n",
+      metadata: {
+        schema_version: 1,
+        exported_at: "2026-05-20T13:00:00Z",
+        scope: "global",
+        kg_count: 1,
+        memory_count: 0,
+        hash: "def",
+      },
+    });
+    expect(existsSync(join(tmpDir, "stale.txt"))).toBe(false);
+  });
 });
 
 describe("exportScope", () => {
@@ -383,6 +457,20 @@ describe("exportScope", () => {
     expect(files).toContain("same_name.md");
     expect(files.some((f) => f.startsWith("global-same_name"))).toBe(true);
   });
+
+  it("uses default now() when opts.now is not provided", async () => {
+    const ds = await fixtureSource();
+    const result = await exportScope({
+      dataSource: ds,
+      scope: "global",
+      vaultRoot: tmp,
+    });
+    expect(result.skipped).toBe(false);
+    const meta = JSON.parse(
+      await readFile(join(tmp, "global", ".lotl-export.json"), "utf8"),
+    );
+    expect(meta.exported_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+  });
 });
 
 describe("exportAllScopes", () => {
@@ -428,5 +516,32 @@ describe("vaultStatus", () => {
     const projectFoo = status.scopes.find((s) => s.scope === "project-foo")!;
     expect(projectFoo.vault_dir_present).toBe(false);
     expect(projectFoo.last_export_at).toBeNull();
+  });
+
+  it("returns empty scopes when vaultRoot does not exist on disk", async () => {
+    const ds = await fixtureSource();
+    const nonExistent = join(tmp, "does-not-exist-anywhere");
+    const status = await vaultStatus({ dataSource: ds, vaultRoot: nonExistent });
+    expect(status.vault_root).toBe(nonExistent);
+    expect(status.scopes.length).toBeGreaterThan(0);
+    for (const s of status.scopes) {
+      expect(s.vault_dir_present).toBe(false);
+    }
+  });
+
+  it("includes scopes on disk that are not in KG with kg_count=0", async () => {
+    const ds = await fixtureSource();
+    await exportScope({
+      dataSource: ds,
+      scope: "global",
+      vaultRoot: tmp,
+      now: () => "2026-05-20T12:00:00Z",
+    });
+    const orphanedDir = scopeDir(tmp, "orphaned");
+    await mkdir(orphanedDir, { recursive: true });
+    const status = await vaultStatus({ dataSource: ds, vaultRoot: tmp });
+    const orphaned = status.scopes.find((s) => s.scope === "orphaned")!;
+    expect(orphaned.kg_count).toBe(0);
+    expect(orphaned.vault_dir_present).toBe(true);
   });
 });

@@ -55,4 +55,9 @@ describe("disambiguateSlug", () => {
     const taken = new Set(["david", "global-david"]);
     expect(disambiguateSlug("david", "global", taken)).toBe("global-david-2");
   });
+
+  it("increments the numeric suffix until finding an available slot", () => {
+    const taken = new Set(["david", "global-david", "global-david-2", "global-david-3"]);
+    expect(disambiguateSlug("david", "global", taken)).toBe("global-david-4");
+  });
 });

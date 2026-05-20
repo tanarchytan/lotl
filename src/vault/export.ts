@@ -175,10 +175,6 @@ export function loadFixtureDataSource(payload: FixturePayload): VaultDataSource 
   };
 }
 
-export async function listScopes(ds: VaultDataSource): Promise<string[]> {
-  return ds.listScopes();
-}
-
 import type { Database as BetterSqlite3Database } from "better-sqlite3";
 
 export function createSqliteDataSource(

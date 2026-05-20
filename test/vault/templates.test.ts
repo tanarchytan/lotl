@@ -215,6 +215,31 @@ describe("renderInboxPage", () => {
     expect(idxOlder).toBeGreaterThan(idxNewer);
   });
 
+  it("exercises both branches of the created_at comparison in sort", () => {
+    const md = renderInboxPage({
+      scope: "global",
+      generated_at: "2026-05-20T12:00:00Z",
+      memories: [
+        {
+          memory_id: "a1",
+          created_at: "2026-05-20T11:00:00Z",
+          importance: 0.85,
+          excerpt: "First",
+        },
+        {
+          memory_id: "a2",
+          created_at: "2026-05-20T10:00:00Z",
+          importance: 0.85,
+          excerpt: "Second",
+        },
+      ],
+    });
+    const idxFirst = md.indexOf("First");
+    const idxSecond = md.indexOf("Second");
+    expect(idxFirst).toBeGreaterThan(-1);
+    expect(idxSecond).toBeGreaterThan(idxFirst);
+  });
+
   it("truncates excerpts at 200 chars and emits short id suffix", () => {
     const long = "y".repeat(250);
     const md = renderInboxPage({

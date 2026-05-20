@@ -63,11 +63,6 @@ function flattenAndTruncate(text: string, max = 200): string {
   return `${flat.slice(0, max)}...`;
 }
 
-function truncate(text: string, max = 200): string {
-  if (text.length <= max) return text;
-  return `${text.slice(0, max)}...`;
-}
-
 function shortId(id: string): string {
   return id.slice(0, 8);
 }
