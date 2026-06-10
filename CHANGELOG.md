@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `LOTL_ONNX=on` — single umbrella toggle (default **off**) that enables the full local-ONNX stack with preconfigured default models: embeddings (`mixedbread-ai/mxbai-embed-xsmall-v1` @ q8) and the local cross-encoder rerank (`jinaai/jina-reranker-v1-tiny-en`). No model names required. Resolved in `src/env.ts` after `.env` load; any explicitly-set granular `LOTL_*` var still wins. Default behaviour is unchanged — zero config means no models, BM25/FTS only.
+
 ## [1.2.0-alpha.1] - 2026-05-20
 
 First alpha of the vault export feature. Lotl now derives a human-browsable

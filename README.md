@@ -115,13 +115,21 @@ lotl mcp stop                      # stop
 
 ## ⭐ Recommended local config — beats MemPalace + agentmemory on LongMemEval
 
-Four lines in `~/.config/lotl/.env`:
+One line in `~/.config/lotl/.env`:
 
 ```sh
-LOTL_EMBED_BACKEND=transformers
-LOTL_TRANSFORMERS_MODEL=mixedbread-ai/mxbai-embed-xsmall-v1
-LOTL_TRANSFORMERS_DTYPE=q8
-LOTL_VEC_MIN_SIM=0.1
+LOTL_ONNX=on
+```
+
+`LOTL_ONNX=on` is the umbrella switch (default **off** → no models, BM25 only). When on, it auto-enables the full local-ONNX stack with the preconfigured defaults — embeddings (`mixedbread-ai/mxbai-embed-xsmall-v1` @ q8) **and** the local cross-encoder rerank (`jinaai/jina-reranker-v1-tiny-en`) — no model names to set. Then `lotl embed` once.
+
+Want to tune it? The granular vars still work and override the toggle:
+
+```sh
+LOTL_ONNX=on
+LOTL_TRANSFORMERS_MODEL=mixedbread-ai/mxbai-embed-xsmall-v1   # override embed model
+LOTL_TRANSFORMERS_DTYPE=q8                                    # override dtype
+LOTL_VEC_MIN_SIM=0.1                                          # cosine acceptance floor
 ```
 
 **Benchmarks** (full reproduction recipes + per-config metrics in [`evaluate/SNAPSHOTS.md`](evaluate/SNAPSHOTS.md)).
