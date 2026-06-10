@@ -5,6 +5,11 @@
 ### Added
 
 - `LOTL_ONNX=on` — single umbrella toggle (default **off**) that enables the full local-ONNX stack with preconfigured default models: embeddings (`mixedbread-ai/mxbai-embed-xsmall-v1` @ q8) and the local cross-encoder rerank (`jinaai/jina-reranker-v1-tiny-en`). No model names required. Resolved in `src/env.ts` after `.env` load; any explicitly-set granular `LOTL_*` var still wins. Default behaviour is unchanged — zero config means no models, BM25/FTS only.
+- Per-project isolation pattern: point a project-scoped MCP server (`.mcp.json`) at its own DB via `INDEX_PATH`. See "Global vs per-project" in the README.
+
+### Fixed
+
+- `getDefaultDbPath()` now creates the parent directory of a custom `INDEX_PATH` so a fresh per-project path (e.g. `.lotl/index.sqlite`) works on first run — better-sqlite3 does not create missing directories.
 
 ## [1.2.0-alpha.1] - 2026-05-20
 

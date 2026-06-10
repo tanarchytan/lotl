@@ -113,6 +113,34 @@ lotl mcp --http --daemon           # start on localhost:8181
 lotl mcp stop                      # stop
 ```
 
+### Global vs per-project
+
+By default a single **user-scope** MCP server (`claude mcp add lotl lotl mcp --scope user`)
+serves every project from one shared index at `~/.cache/lotl/index.sqlite`, and
+memory uses the `global` scope. Set `LOTL_ONNX=on` once in `~/.config/lotl/.env`
+and the local model stack applies everywhere.
+
+For **hard per-project isolation** — a private index per repo, no cross-project
+memory or document bleed — drop a `.mcp.json` at the repo root. A project-scoped
+server with the same name overrides the global one inside that repo:
+
+```json
+{
+  "mcpServers": {
+    "lotl": {
+      "command": "lotl.cmd",
+      "args": ["mcp"],
+      "env": { "INDEX_PATH": ".lotl/index.sqlite", "LOTL_ONNX": "on" }
+    }
+  }
+}
+```
+
+`INDEX_PATH` is resolved against the server's working directory (the repo root),
+and its parent dir is created automatically on first run. Commit `.mcp.json`,
+gitignore `.lotl/`. On macOS/Linux use `"command": "lotl"` (drop the `.cmd`).
+Then, inside the repo: `lotl collection add . --name <repo> && lotl embed`.
+
 ## ⭐ Recommended local config — beats MemPalace + agentmemory on LongMemEval
 
 One line in `~/.config/lotl/.env`:

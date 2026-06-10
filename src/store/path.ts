@@ -206,9 +206,18 @@ export function _resetProductionModeForTesting(): void {
 }
 
 export function getDefaultDbPath(indexName: string = "index"): string {
-  // Always allow override via INDEX_PATH (for testing)
+  // Always allow override via INDEX_PATH (tests + per-project isolation:
+  // a project-scoped MCP server can point at its own DB, e.g.
+  // INDEX_PATH=<repo>/.lotl/index.sqlite). Create the parent dir so a fresh
+  // per-project path works on first run — better-sqlite3 won't mkdir, and
+  // the path may point at a not-yet-existing directory.
   if (process.env.INDEX_PATH) {
-    return process.env.INDEX_PATH;
+    const indexPath = process.env.INDEX_PATH;
+    const parent = indexPath.replace(/[\\/][^\\/]*$/, "");
+    if (parent && parent !== indexPath) {
+      try { mkdirSync(parent, { recursive: true }); } catch { /* ignore */ }
+    }
+    return indexPath;
   }
 
   // In non-production mode (tests), require explicit path

@@ -57,3 +57,7 @@ evaluate/longmemeval/**/*.log
 evaluate/logs/
 evaluate/sweeps/*/
 !evaluate/sweeps/configs/
+
+# Per-project lotl index (hard isolation via INDEX_PATH in .mcp.json)
+.lotl/
+.mcp.json
