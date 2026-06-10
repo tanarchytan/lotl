@@ -15,7 +15,8 @@
  *   1. The backend loads without throwing.
  *   2. Returned scores discriminate between obviously relevant and
  *      obviously irrelevant documents — concretely, the relevant doc must
- *      score AT LEAST 5 logit-units above the irrelevant doc.
+ *      score AT LEAST 2 logit-units above the irrelevant doc. (The default
+ *      backend is jina-reranker-v1-tiny-en, q8; observed gap ≈ 3.15.)
  *   3. The relevant doc beats the irrelevant doc on rank order.
  *
  * If a future change re-introduces the softmax-over-single-class collapse,
@@ -55,10 +56,14 @@ describe.skipIf(skipUnlessOptedIn)("TransformersRerankBackend", () => {
 
     // Discrimination: the relevant doc must beat the irrelevant doc by a
     // wide margin. If this fails, the rerank pass is producing constant
-    // or near-constant scores (the original bug). 5 logit-units is the
-    // floor; observed gap on the verified backend is ~20.
-    expect(relevantScore - irrelevantScore).toBeGreaterThan(5);
-    expect(relevantScore - noiseScore).toBeGreaterThan(5);
+    // or near-constant scores (the original bug). The floor is 2.0
+    // logit-units. On the current default backend (jina-reranker-v1-tiny-en,
+    // q8) the observed gaps are rel−irrel ≈ 3.15 and rel−noise ≈ 3.38,
+    // giving ~40% headroom above the floor. (The legacy ms-marco-MiniLM-L6
+    // backend produced a much wider ~20-unit gap; this threshold was
+    // recalibrated when the default switched to jina-tiny on 2026-04-20.)
+    expect(relevantScore - irrelevantScore).toBeGreaterThan(2);
+    expect(relevantScore - noiseScore).toBeGreaterThan(2);
 
     // Rank order: sort descending by score and assert the relevant doc
     // is at rank 1.
