@@ -1,7 +1,7 @@
 /**
- * openclaw/plugin.ts — QMD memory + knowledge plugin for OpenClaw.
+ * openclaw/plugin.ts — Lotl memory + knowledge plugin for OpenClaw.
  *
- * IMPORTANT: OpenClaw already has built-in QMD support as a memory backend
+ * IMPORTANT: OpenClaw already has built-in Lotl support as a memory backend
  * (memory.backend = "qmd"). That handles document search, indexing, and
  * session transcript export automatically.
  *
@@ -76,7 +76,7 @@ const DEFAULT_CONFIG: QmdPluginConfig = {
 // =============================================================================
 
 /**
- * Map openclaw.json plugin config to QMD_* environment variables.
+ * Map openclaw.json plugin config to LOTL_* environment variables.
  * Called AFTER loadQmdEnv() so plugin config wins over .env file.
  */
 function applyConfigToEnv(cfg: QmdPluginConfig): void {
@@ -125,8 +125,8 @@ function getDb(config: QmdPluginConfig) {
 
 const qmdPlugin = definePluginEntry({
   id: "tanarchy-lotl",
-  name: "Tanarchy QMD",
-  description: "Document search + conversation memory + knowledge graph powered by QMD",
+  name: "Tanarchy Lotl",
+  description: "Document search + conversation memory + knowledge graph powered by Lotl",
 
   async register(api: OpenClawPluginApi) {
     const rawConfig = api.pluginConfig as Partial<QmdPluginConfig> | undefined;

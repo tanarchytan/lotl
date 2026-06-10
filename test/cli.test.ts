@@ -119,7 +119,7 @@ beforeAll(async () => {
     join(fixturesDir, "README.md"),
     `# Test Project
 
-This is a test project for QMD CLI testing.
+This is a test project for Lotl .
 
 ## Features
 
@@ -288,7 +288,7 @@ describe("CLI Skill Commands", () => {
     expect(existsSync(join(projectDir, ".claude", "skills", "lotl"))).toBe(false);
     // CLI output may use forward slashes even on Windows
     const skillDirNorm = skillDir.replace(/\\/g, '/');
-    expect(stdout.replace(/\\/g, '/')).toContain(`✓ Installed QMD skill to ${skillDirNorm}`);
+    expect(stdout.replace(/\\/g, '/')).toContain(`✓ Installed Lotl skill to ${skillDirNorm}`);
     expect(stdout).toContain("Tip: create a Claude symlink manually");
   });
 
@@ -309,7 +309,7 @@ describe("CLI Skill Commands", () => {
     expect(readFileSync(join(claudeLink, "SKILL.md"), "utf-8")).toContain("name: lotl");
     const skillDirN = skillDir.replace(/\\/g, '/');
     const claudeLinkN = claudeLink.replace(/\\/g, '/');
-    expect(stdout.replace(/\\/g, '/')).toContain(`✓ Installed QMD skill to ${skillDirN}`);
+    expect(stdout.replace(/\\/g, '/')).toContain(`✓ Installed Lotl skill to ${skillDirN}`);
     expect(stdout.replace(/\\/g, '/')).toContain(`✓ Linked Claude skill at ${claudeLinkN}`);
   });
 

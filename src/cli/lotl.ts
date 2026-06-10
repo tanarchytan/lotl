@@ -177,7 +177,7 @@ async function showStatus(): Promise<void> {
     version = JSON.parse(readFileSync(pkgPath, "utf-8")).version ?? "unknown";
   } catch {}
 
-  console.log(`${c.bold}QMD Status${c.reset}  v${version}\n`);
+  console.log(`${c.bold}Lotl Status${c.reset}  v${version}\n`);
   console.log(`Index: ${dbPath}`);
   console.log(`Size:  ${formatBytes(indexSize)}`);
 
@@ -2437,7 +2437,7 @@ if (isMain) {
           process.kill(pid, 0); // alive?
           process.kill(pid, "SIGTERM");
           unlinkSync(pidPath);
-          console.log(`Stopped QMD MCP server (PID ${pid}).`);
+          console.log(`Stopped Lotl MCP server (PID ${pid}).`);
         } catch {
           unlinkSync(pidPath);
           console.log("Cleaned up stale PID file (server was not running).");

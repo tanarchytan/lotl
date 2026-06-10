@@ -123,7 +123,7 @@ async function shouldCreateClaudeSymlink(linkPath: string, autoYes: boolean): Pr
 export async function installSkill(globalInstall: boolean, force: boolean, autoYes: boolean): Promise<void> {
   const installDir = getSkillInstallDir(globalInstall);
   writeEmbeddedSkill(installDir, force);
-  console.log(`✓ Installed QMD skill to ${installDir}`);
+  console.log(`✓ Installed Lotl skill to ${installDir}`);
 
   const claudeLinkPath = getClaudeSkillLinkPath(globalInstall);
   if (!(await shouldCreateClaudeSymlink(claudeLinkPath, autoYes))) {

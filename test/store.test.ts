@@ -1,5 +1,5 @@
 /**
- * store.test.ts - Comprehensive unit tests for the QMD store module
+ * store.test.ts - Comprehensive unit tests for Lotl store module
  *
  * Run with: bun test store.test.ts
  *

@@ -1,7 +1,7 @@
 /**
- * QMD MCP Server - Model Context Protocol server for QMD
+ * Lotl MCP Server - Model Context Protocol server for Lotl
  *
- * Exposes QMD search and document retrieval as MCP tools and resources.
+ * Exposes Lotl search and document retrieval as MCP tools and resources.
  * Documents are accessible via lotl:// URIs.
  *
  * Follows MCP spec 2025-06-18 for proper response types.
@@ -28,7 +28,7 @@ import {
   addLineNumbers,
   getDefaultDbPath,
   DEFAULT_MULTI_GET_MAX_BYTES,
-  type QMDStore,
+  type LotlStore,
   type ExpandedQuery,
   type IndexStatus,
 } from "../index.js";
@@ -118,7 +118,7 @@ function getPackageVersion(): string {
 let _instructionsCache: { text: string; builtAt: number } | null = null;
 const INSTRUCTIONS_TTL_MS = 60_000;
 
-async function buildInstructions(store: QMDStore): Promise<string> {
+async function buildInstructions(store: LotlStore): Promise<string> {
   if (_instructionsCache && Date.now() - _instructionsCache.builtAt < INSTRUCTIONS_TTL_MS) {
     return _instructionsCache.text;
   }
@@ -128,7 +128,7 @@ async function buildInstructions(store: QMDStore): Promise<string> {
   const lines: string[] = [];
 
   // --- What is this? ---
-  lines.push(`QMD is your local search engine over ${status.totalDocuments} markdown documents.`);
+  lines.push(`Lotl is your local search engine over ${status.totalDocuments} markdown documents.`);
   if (globalCtx) lines.push(`Context: ${globalCtx}`);
 
   // --- What's searchable? ---
@@ -194,10 +194,10 @@ async function buildInstructions(store: QMDStore): Promise<string> {
 }
 
 /**
- * Create an MCP server with all QMD tools, resources, and prompts registered.
+ * Create an MCP server with all Lotl tools, resources, and prompts registered.
  * Shared by both stdio and HTTP transports.
  */
-async function createMcpServer(store: QMDStore): Promise<McpServer> {
+async function createMcpServer(store: LotlStore): Promise<McpServer> {
   const server = new McpServer(
     { name: "lotl", version: getPackageVersion() },
     { instructions: await buildInstructions(store) },
@@ -216,8 +216,8 @@ async function createMcpServer(store: QMDStore): Promise<McpServer> {
     "document",
     new ResourceTemplate("lotl://{+path}", { list: undefined }),
     {
-      title: "QMD Document",
-      description: "A markdown document from your QMD knowledge base. Use search tools to discover documents.",
+      title: "Lotl Document",
+      description: "A markdown document from your Lotl knowledge base. Use search tools to discover documents.",
       mimeType: "text/markdown",
     },
     async (uri, { path }) => {
@@ -533,7 +533,7 @@ Intent-aware lex (C++ performance, not sports):
     "doc_status",
     {
       title: "Index Status",
-      description: "Show the status of the QMD index: collections, document counts, and health information.",
+      description: "Show the status of the Lotl index: collections, document counts, and health information.",
       annotations: { readOnlyHint: true, openWorldHint: false },
       inputSchema: {},
     },
@@ -541,7 +541,7 @@ Intent-aware lex (C++ performance, not sports):
       const status: StatusResult = await store.getStatus();
 
       const summary = [
-        `QMD Index Status:`,
+        `Lotl Index Status:`,
         `  Total documents: ${status.totalDocuments}`,
         `  Needs embedding: ${status.needsEmbedding}`,
         `  Vector index: ${status.hasVectorIndex ? 'yes' : 'no'}`,
@@ -580,7 +580,7 @@ Intent-aware lex (C++ performance, not sports):
       const globalCtx = await store.getGlobalContext();
       const lines: string[] = [];
 
-      lines.push(`# QMD Briefing — ${status.totalDocuments} documents indexed`);
+      lines.push(`# Lotl Briefing — ${status.totalDocuments} documents indexed`);
       if (globalCtx) lines.push(`\nGlobal context: ${globalCtx}`);
       lines.push(`\nVector index: ${status.hasVectorIndex ? 'active' : 'not built'}${status.needsEmbedding > 0 ? ` (${status.needsEmbedding} pending — run manage({ operation: "embed" }))` : ''}`);
 
@@ -1090,7 +1090,7 @@ Intent-aware lex (C++ performance, not sports):
       ].join("\n"),
       annotations: { readOnlyHint: false, openWorldHint: false },
       inputSchema: {
-        subject: z.string().describe("Entity name (e.g. 'David', 'QMD project')"),
+        subject: z.string().describe("Entity name (e.g. 'David', 'Lotl project')"),
         predicate: z.string().describe("Relationship (e.g. 'prefers', 'works_at', 'uses')"),
         object: z.string().describe("Value (e.g. 'ZeroEntropy', 'Tanarchy', 'TypeScript')"),
         valid_from: z.number().optional().describe("Timestamp (ms) when this became true (default: now)"),
@@ -1227,9 +1227,9 @@ Intent-aware lex (C++ performance, not sports):
   server.registerTool(
     "doc_manage",
     {
-      title: "Manage QMD Index",
+      title: "Manage Lotl Index",
       description: [
-        "Administrative operations for QMD index maintenance.",
+        "Administrative operations for Lotl index maintenance.",
         "",
         "Operations:",
         "- **embed**: Generate vector embeddings for pending documents (uses remote provider if configured)",
@@ -1602,7 +1602,7 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
     process.exit(0);
   });
 
-  log(`QMD MCP server listening on http://localhost:${actualPort}/mcp`);
+  log(`Lotl MCP server listening on http://localhost:${actualPort}/mcp`);
   return { httpServer, port: actualPort, stop };
 }
 

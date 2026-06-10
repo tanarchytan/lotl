@@ -1,5 +1,5 @@
 /**
- * memory/index.ts — Conversation memory layer for QMD.
+ * memory/index.ts — Conversation memory layer for Lotl.
  *
  * Stores and retrieves agent memories alongside document search.
  * Same SQLite DB, same embed/rerank providers, same search pipeline.

@@ -1,5 +1,5 @@
 /**
- * formatter.ts - Output formatting utilities for QMD
+ * formatter.ts - Output formatting utilities for Lotl
  *
  * Provides methods to format search results and documents into various output formats:
  * JSON, CSV, XML, Markdown, files list, and CLI (colored terminal output).
@@ -56,13 +56,6 @@ export type FormatOptions = {
 export function addLineNumbers(text: string, startLine: number = 1): string {
   const lines = text.split('\n');
   return lines.map((line, i) => `${startLine + i}: ${line}`).join('\n');
-}
-
-/**
- * Extract short docid from a full hash (first 6 characters).
- */
-export function getDocid(hash: string): string {
-  return hash.slice(0, 6);
 }
 
 // =============================================================================
