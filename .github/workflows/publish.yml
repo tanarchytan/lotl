@@ -7,7 +7,7 @@ name: Publish
 #
 #   1. test        — full cross-platform test matrix (same as CI)
 #   2. pack-audit  — build + `npm pack` dry-run + content sanity check
-#   3. publish     — `npm publish --provenance`
+#   3. publish     — `npm publish` via npm Trusted Publishing (OIDC, no token)
 #   4. smoke       — fresh `npm install -g` of the just-published version
 #                    and verify `lotl --version` matches the tag
 
@@ -17,7 +17,7 @@ on:
 
 jobs:
   # ------------------------------------------------------------------
-  # 1. Cross-platform test matrix (Ubuntu + macOS × Node 22/23)
+  # 1. Cross-platform test matrix (Ubuntu + macOS × Node 22/24)
   # ------------------------------------------------------------------
   test:
     name: Test — Node ${{ matrix.node-version }} (${{ matrix.os }})
@@ -26,11 +26,11 @@ jobs:
       fail-fast: true
       matrix:
         os: [ubuntu-latest, macos-latest]
-        node-version: ["22", "23"]
+        node-version: ["22", "24"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node-version }}
 
@@ -64,9 +64,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
 
@@ -137,19 +137,32 @@ jobs:
       id-token: write   # npm provenance via OIDC
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      # Node 24 ships npm >= 11.5.1, the minimum that supports npm Trusted
+      # Publishing (OIDC). Older npm silently fails the OIDC token exchange
+      # and surfaces a misleading "E404 — not in this registry" on the PUT.
+      - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
+
+      - name: Ensure npm supports trusted publishing (>= 11.5.1)
+        run: |
+          npm install -g npm@latest
+          echo "npm version: $(npm --version)"
 
       - run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
       - run: npm install
       - run: npm run build
 
+      # Trusted Publishing (OIDC): authenticated via the id-token below, no
+      # NPM_TOKEN required. Provenance is generated automatically — the
+      # `--provenance` flag is no longer needed. Requires a Trusted Publisher
+      # to be registered on npmjs.com for @tanarchy/lotl (org: tanarchytan,
+      # repo: lotl, workflow: publish.yml, no environment).
       - name: Publish to npm
-        run: npm publish --provenance --access public
+        run: npm publish --access public
 
       - name: Extract changelog entry
         id: notes
@@ -184,7 +197,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: publish
     steps:
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
 
