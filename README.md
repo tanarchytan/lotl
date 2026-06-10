@@ -10,7 +10,7 @@ A unified search + memory + knowledge-graph system that runs on what's already o
 
 **Lotl** = *Living-off-the-Land* (the cybersecurity term for "use what's already there to avoid new infrastructure"). Repurposed here: FTS5 + sqlite-vec + local ONNX embeddings via `@huggingface/transformers`. Cloud APIs (ZeroEntropy, SiliconFlow, Nebius, Gemini, OpenAI) are opt-in, not required.
 
-> Evolved from a fork of [tobi/qmd](https://github.com/tobilu/qmd) — see the origin story below. CLI binary `lotl` is the canonical name (the `qmd` alias was dropped at v1.0.0 — hard break over back-compat). Env vars are `LOTL_*`; virtual paths are `lotl://`.
+> Evolved from a fork of [tobi/qmd](https://github.com/tobi/qmd) — see the origin story below. CLI binary `lotl` is the canonical name (the `qmd` alias was dropped at v1.0.0 — hard break over back-compat). Env vars are `LOTL_*`; virtual paths are `lotl://`.
 
 ```sh
 npm install -g @tanarchy/lotl
@@ -681,7 +681,7 @@ with `category=reflection`. Wired into the OpenClaw `session_end` hook.
 
 ## From v0 to v1.0 — the origin story + metrics journey
 
-**How Lotl started.** Two weeks before this release (my first fork commit is `2026-04-04`), I was running [tobi/qmd](https://github.com/tobilu/qmd) (a local BM25+vector markdown search CLI) alongside [memory-lancedb-pro](https://github.com/CortexReach/memory-lancedb-pro) for agent memory — and the mismatch between the two databases constantly bit me. Two separate stores, two separate ingest paths, two different query APIs, syncing by hand. I forked qmd because it was the easiest codebase to get running and modify, and set out to merge the memory layer into the same SQLite file.
+**How Lotl started.** Two weeks before this release (my first fork commit is `2026-04-04`), I was running [tobi/qmd](https://github.com/tobi/qmd) (a local BM25+vector markdown search CLI) alongside [memory-lancedb-pro](https://github.com/CortexReach/memory-lancedb-pro) for agent memory — and the mismatch between the two databases constantly bit me. Two separate stores, two separate ingest paths, two different query APIs, syncing by hand. I forked qmd because it was the easiest codebase to get running and modify, and set out to merge the memory layer into the same SQLite file.
 
 That "just get them to sync cleanly" goal turned into a rabbit hole. The first attempts at a proper memory framework on top of qmd **didn't work** — recall was bad, decay was wrong, extraction produced garbage. That failure sent me into the research literature (LongMemEval, LoCoMo, Mem0, Hindsight, MemPalace, MemGPT, GraphRAG), and each paper changed a piece of the design. Every version below is my fork — **not upstream tobi/qmd** — evolving the memory layer while keeping the hybrid-search core qmd was already good at.
 
@@ -744,7 +744,7 @@ Lotl stands on a lot of shoulders. This list is not exhaustive and reflects what
 
 ### Origin
 
-- **[tobi/qmd](https://github.com/tobilu/qmd)** — the upstream project I forked in January 2026. Tobi's qmd was "Quick Markdown" — a local BM25+vector search CLI for notes, opt-in local ONNX embeddings, no memory layer. It's a clean, small codebase and that's exactly why it was the right place to start: easy to read, easy to modify, and I didn't have to fight a framework to bolt memory onto it. The BM25+vector+RRF foundation, the sqlite-vec integration, the MCP server scaffolding, and the zero-setup install story are all tobi's. Lotl would not exist without qmd to fork.
+- **[tobi/qmd](https://github.com/tobi/qmd)** — the upstream project I forked in January 2026. Tobi's qmd was "Quick Markdown" — a local BM25+vector search CLI for notes, opt-in local ONNX embeddings, no memory layer. It's a clean, small codebase and that's exactly why it was the right place to start: easy to read, easy to modify, and I didn't have to fight a framework to bolt memory onto it. The BM25+vector+RRF foundation, the sqlite-vec integration, the MCP server scaffolding, and the zero-setup install story are all tobi's. Lotl would not exist without qmd to fork.
 
 ### The rabbit hole
 
