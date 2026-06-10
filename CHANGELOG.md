@@ -7,6 +7,7 @@
 - `LOTL_ONNX=on` — single umbrella toggle (default **off**) that enables the full local-ONNX stack with preconfigured default models: embeddings (`mixedbread-ai/mxbai-embed-xsmall-v1` @ q8) and the local cross-encoder rerank (`jinaai/jina-reranker-v1-tiny-en`). No model names required. Resolved in `src/env.ts` after `.env` load; any explicitly-set granular `LOTL_*` var still wins. Default behaviour is unchanged — zero config means no models, BM25/FTS only.
 - Per-project isolation pattern: point a project-scoped MCP server (`.mcp.json`) at its own DB via `INDEX_PATH`. See "Global vs per-project" in the README.
 - `hooks/lotl_recall_hook.sh` — `UserPromptSubmit` hook that injects relevant memories before the agent answers (the retrieve half of auto-memory; pairs with the existing `lotl_save_hook.sh`). Fail-open, fast FTS recall (`LOTL_ONNX=off`), `jq`-based. Configurable via `LOTL_BIN` / `LOTL_RECALL_TIMEOUT` / `LOTL_RECALL_MAX_LINES`.
+- Packaged skill (`skills/lotl/SKILL.md`, embedded via `lotl skill install`) documents the `LOTL_ONNX` toggle, global-vs-per-project MCP setup, and the auto-memory hook trio with install snippets.
 
 ### Fixed
 

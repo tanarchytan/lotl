@@ -164,7 +164,19 @@ Each provider object: `{ "provider", "apiKey", "url", "model", "dimensions" }`
 
 ### Standalone Config (CLI / MCP)
 
-Set env vars in `~/.config/lotl/.env`:
+Set env vars in `~/.config/lotl/.env`.
+
+**Default is zero models — BM25/FTS only.** To turn on the local ONNX stack
+(embeddings + cross-encoder rerank, preconfigured default models), one line:
+```bash
+LOTL_ONNX=on
+```
+`LOTL_ONNX` is the umbrella toggle (default **off**). When on it fills in
+`LOTL_EMBED_BACKEND=transformers`, `LOTL_MEMORY_RERANK=on`, and
+`LOTL_RERANK_BACKEND=transformers` with default models. Any explicit granular
+var below overrides it. Then run `lotl embed` once.
+
+For **remote** providers instead (cloud embed/rerank):
 ```bash
 LOTL_EMBED_PROVIDER=zeroentropy
 LOTL_EMBED_API_KEY=ze-your-key
@@ -180,6 +192,50 @@ LOTL_RERANK_MODEL=zerank-2
 ```
 
 See `.env.example` in the package for all options.
+
+### Global vs per-project (MCP)
+
+By default one **user-scope** MCP server serves every project from the shared
+index `~/.cache/lotl/index.sqlite` (memory scope `global`). For **hard
+per-project isolation** — a private index per repo — drop a `.mcp.json` at the
+repo root with the same server name; it overrides the global one inside that repo:
+```json
+{ "mcpServers": { "lotl": { "command": "lotl.cmd", "args": ["mcp"],
+  "env": { "INDEX_PATH": ".lotl/index.sqlite", "LOTL_ONNX": "on" } } } }
+```
+`INDEX_PATH` resolves against the repo root and its parent dir is created
+automatically. Commit `.mcp.json`, gitignore `.lotl/`. (macOS/Linux: `"command": "lotl"`.)
+
+### Auto-memory hooks (Claude Code / OpenClaw)
+
+The package ships three hooks under `hooks/` for an automatic push + retrieve
+memory loop. They are **opt-in** — wire them into your client's settings
+(`~/.claude/settings.json` for global, or `.claude/settings.local.json` for one
+project). All are fail-open and require `jq`.
+
+| Hook | Event | Role |
+|------|-------|------|
+| `lotl_recall_hook.sh` | `UserPromptSubmit` | **Retrieve** — injects relevant memories before each turn |
+| `lotl_save_hook.sh` | `Stop` | **Push** — every N exchanges, prompts a `memory_extract` save |
+| `lotl_precompact_hook.sh` | `PreCompact` | **Push** — force-save everything before context compaction |
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command",
+      "command": "bash '<pkg>/hooks/lotl_recall_hook.sh'", "timeout": 15 }] }],
+    "Stop": [{ "hooks": [{ "type": "command",
+      "command": "bash '<pkg>/hooks/lotl_save_hook.sh'", "timeout": 30 }] }],
+    "PreCompact": [{ "hooks": [{ "type": "command",
+      "command": "bash '<pkg>/hooks/lotl_precompact_hook.sh'", "timeout": 30 }] }]
+  }
+}
+```
+On macOS/Linux drop the `bash` wrapper and point `command` directly at the
+script. Tunables: `LOTL_BIN` (default `lotl`; Windows `lotl.cmd`),
+`LOTL_SAVE_INTERVAL` (default 15), `LOTL_RECALL_TIMEOUT`, `LOTL_RECALL_MAX_LINES`.
+The recall hook does a fast FTS recall (`LOTL_ONNX=off` internally) so no model
+loads per prompt. Hooks take effect on the next session (loaded at startup).
 
 ## MCP: `query`
 
