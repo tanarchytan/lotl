@@ -13,6 +13,7 @@
 ### Fixed
 
 - `getDefaultDbPath()` now creates the parent directory of a custom `INDEX_PATH` so a fresh per-project path (e.g. `.lotl/index.sqlite`) works on first run — better-sqlite3 does not create missing directories.
+- `memoryStoreBatch` (`memory_add_batch`) no longer crashes with `no such table: memories_vec` when there are no embeddings (`LOTL_ONNX` off / no provider / never embedded). It prepared the vec0 INSERT unconditionally — and `prepare()` throws at prepare time against a missing table — whereas single `memoryStore` degraded to FTS-only. The batch now guards vec-table creation + the prepared insert and falls back to FTS-only storage.
 
 ## [1.2.0-alpha.1] - 2026-05-20
 

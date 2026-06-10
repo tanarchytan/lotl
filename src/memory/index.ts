@@ -842,13 +842,22 @@ export async function memoryStoreBatch(
     });
   }
 
-  // Init vec table once with the actual dimension from the first available
-  // embedding. Subsequent calls are no-ops via the _memoriesVecInitialized flag.
+  // Init the vec table once with the actual dimension from the first available
+  // embedding, then prepare the vec insert. With no embeddings (LOTL_ONNX off /
+  // no provider / never embedded) memories_vec may not exist — and preparing an
+  // INSERT against a missing table throws at prepare time. Guard both so the
+  // batch falls back to FTS-only storage instead of crashing, mirroring the
+  // single-memory memoryStore degradation path.
   const firstEmb = rows.find(r => r.embedding !== null)?.embedding;
+  let insertVecStmt: ReturnType<typeof db.prepare> | null = null;
   if (firstEmb) {
-    try { ensureMemoriesVecTable(db, firstEmb.length); } catch { /* see below */ }
+    try {
+      ensureMemoriesVecTable(db, firstEmb.length);
+      insertVecStmt = db.prepare(`INSERT INTO memories_vec (scope, id, embedding) VALUES (?, ?, ?)`);
+    } catch {
+      insertVecStmt = null; // no vec table — memories still stored via FTS
+    }
   }
-  const insertVecStmt = db.prepare(`INSERT INTO memories_vec (scope, id, embedding) VALUES (?, ?, ?)`);
   const touch = db.prepare(`UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?`);
 
   const txn = db.transaction(() => {
@@ -877,7 +886,7 @@ export async function memoryStoreBatch(
       // vec0 inserts — sqlite-vec doesn't support multi-VALUES because each
       // row binds a Float32Array via per-row binding. Loop is unavoidable.
       for (const r of rows) {
-        if (r.embedding) {
+        if (r.embedding && insertVecStmt) {
           try {
             insertVecStmt.run(r.scope, r.id, new Float32Array(r.embedding));
           } catch { /* dimension mismatch / table failure — memory still stored */ }
