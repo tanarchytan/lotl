@@ -8,6 +8,7 @@
 - Per-project isolation pattern: point a project-scoped MCP server (`.mcp.json`) at its own DB via `INDEX_PATH`. See "Global vs per-project" in the README.
 - `hooks/lotl_recall_hook.sh` — `UserPromptSubmit` hook that injects relevant memories before the agent answers (the retrieve half of auto-memory; pairs with the existing `lotl_save_hook.sh`). Fail-open, fast FTS recall (`LOTL_ONNX=off`), `jq`-based. Configurable via `LOTL_BIN` / `LOTL_RECALL_TIMEOUT` / `LOTL_RECALL_MAX_LINES`.
 - Packaged skill (`skills/lotl/SKILL.md`, embedded via `lotl skill install`) documents the `LOTL_ONNX` toggle, global-vs-per-project MCP setup, and the auto-memory hook trio with install snippets.
+- Cross-harness auto-memory: the same `hooks/lotl_*.sh` scripts now work on **Codex** as well as Claude Code (Codex's command-hook protocol is a port of Claude Code's — only the config format differs; TOML snippet added to the skill). Added `hooks/opencode-lotl-memory.mjs`, an **OpenCode** TS plugin (recall on `chat.message`, save on `session.idle`; uses the injected Bun `$` with a no-shell `execFile` fallback — never `shell: true`). Documented the universal **skill-driven** fallback (agent self-invokes `memory_recall`/`memory_extract`) for any skills+MCP harness without lifecycle hooks.
 
 ### Fixed
 

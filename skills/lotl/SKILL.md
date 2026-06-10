@@ -206,36 +206,69 @@ repo root with the same server name; it overrides the global one inside that rep
 `INDEX_PATH` resolves against the repo root and its parent dir is created
 automatically. Commit `.mcp.json`, gitignore `.lotl/`. (macOS/Linux: `"command": "lotl"`.)
 
-### Auto-memory hooks (Claude Code / OpenClaw)
+### Auto-memory across harnesses
 
-The package ships three hooks under `hooks/` for an automatic push + retrieve
-memory loop. They are **opt-in** — wire them into your client's settings
-(`~/.claude/settings.json` for global, or `.claude/settings.local.json` for one
-project). All are fail-open and require `jq`.
+An automatic push (save) + retrieve (recall) loop. lotl integrates at the layer
+each harness supports — pick the row for yours. All paths are opt-in and fail-open.
+
+| Harness | Mechanism | What to wire |
+|---------|-----------|--------------|
+| **Claude Code** | command hooks | `hooks/lotl_*.sh` in `~/.claude/settings.json` |
+| **Codex** | command hooks (same scripts) | `hooks/lotl_*.sh` in `~/.codex/config.toml` |
+| **OpenCode** | TS plugin | `hooks/opencode-lotl-memory.mjs` |
+| **OpenClaw** | built-in plugin | enable `tanarchy-lotl` (autoRecall/autoCapture) |
+| **Any skill + MCP harness** | skill-driven (no hooks) | the agent self-invokes — see below |
+
+**Claude Code & Codex** share the same three fail-open bash hooks (`jq` required):
 
 | Hook | Event | Role |
 |------|-------|------|
-| `lotl_recall_hook.sh` | `UserPromptSubmit` | **Retrieve** — injects relevant memories before each turn |
-| `lotl_save_hook.sh` | `Stop` | **Push** — every N exchanges, prompts a `memory_extract` save |
-| `lotl_precompact_hook.sh` | `PreCompact` | **Push** — force-save everything before context compaction |
+| `lotl_recall_hook.sh` | `UserPromptSubmit` | **Retrieve** — inject relevant memories before each turn |
+| `lotl_save_hook.sh` | `Stop` | **Push** — every N exchanges, prompt a `memory_extract` save |
+| `lotl_precompact_hook.sh` | `PreCompact` | **Push** — force-save before context compaction (Codex: may be unavailable — rely on `Stop`) |
 
+Claude Code (`~/.claude/settings.json`, JSON):
 ```json
-{
-  "hooks": {
-    "UserPromptSubmit": [{ "hooks": [{ "type": "command",
-      "command": "bash '<pkg>/hooks/lotl_recall_hook.sh'", "timeout": 15 }] }],
-    "Stop": [{ "hooks": [{ "type": "command",
-      "command": "bash '<pkg>/hooks/lotl_save_hook.sh'", "timeout": 30 }] }],
-    "PreCompact": [{ "hooks": [{ "type": "command",
-      "command": "bash '<pkg>/hooks/lotl_precompact_hook.sh'", "timeout": 30 }] }]
-  }
-}
+{ "hooks": {
+  "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "bash '<pkg>/hooks/lotl_recall_hook.sh'", "timeout": 15 }] }],
+  "Stop":            [{ "hooks": [{ "type": "command", "command": "bash '<pkg>/hooks/lotl_save_hook.sh'",   "timeout": 30 }] }],
+  "PreCompact":      [{ "hooks": [{ "type": "command", "command": "bash '<pkg>/hooks/lotl_precompact_hook.sh'", "timeout": 30 }] }]
+} }
 ```
-On macOS/Linux drop the `bash` wrapper and point `command` directly at the
-script. Tunables: `LOTL_BIN` (default `lotl`; Windows `lotl.cmd`),
-`LOTL_SAVE_INTERVAL` (default 15), `LOTL_RECALL_TIMEOUT`, `LOTL_RECALL_MAX_LINES`.
-The recall hook does a fast FTS recall (`LOTL_ONNX=off` internally) so no model
-loads per prompt. Hooks take effect on the next session (loaded at startup).
+Codex (`~/.codex/config.toml`, TOML — identical scripts, Codex's hook protocol is a port of Claude Code's):
+```toml
+[[hooks.UserPromptSubmit]]
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = "bash '<pkg>/hooks/lotl_recall_hook.sh'"
+timeout = 15
+
+[[hooks.Stop]]
+[[hooks.Stop.hooks]]
+type = "command"
+command = "bash '<pkg>/hooks/lotl_save_hook.sh'"
+timeout = 30
+```
+macOS/Linux: drop the `bash` wrapper, point `command` at the script directly.
+Tunables: `LOTL_BIN` (default `lotl`; Windows `lotl.cmd`), `LOTL_SAVE_INTERVAL`
+(15), `LOTL_RECALL_TIMEOUT`, `LOTL_RECALL_MAX_LINES`. Recall does a fast FTS
+lookup (`LOTL_ONNX=off`) so no model loads per prompt. Hooks load at session start.
+
+**OpenCode** uses a TS plugin instead of command hooks. Copy
+`hooks/opencode-lotl-memory.mjs` to `~/.config/opencode/plugins/` (global) or
+`<repo>/.opencode/plugins/` (project), or reference it in `opencode.json`:
+```json
+{ "plugin": ["file:///abs/path/to/hooks/opencode-lotl-memory.mjs"] }
+```
+It recalls on `chat.message` (injects context) and saves on `session.idle`.
+
+**Any harness with skills + MCP but no hooks** (the universal fallback): no
+wiring needed — this skill instructs the agent to drive the loop itself:
+
+> When this skill is active, **before answering** call `memory_recall`/`memory_search`
+> with the user's request and use any relevant hits. **After a meaningful exchange**
+> (a decision, preference, fact, or correction), call `memory_extract` (or
+> `memory_store`) to persist it. Keep memories concise and scoped.
 
 ## MCP: `query`
 
