@@ -161,8 +161,26 @@ jobs:
       # `--provenance` flag is no longer needed. Requires a Trusted Publisher
       # to be registered on npmjs.com for @tanarchy/lotl (org: tanarchytan,
       # repo: lotl, workflow: publish.yml, no environment).
+      #
+      # Prerelease tags (v1.2.0-alpha.1, v1.0.0-rc1, …) must NOT land on the
+      # `latest` dist-tag — npm >= 11 hard-errors without an explicit --tag.
+      # Route them to a prerelease channel (alpha/beta/rc) so `latest` keeps
+      # pointing at the newest stable release.
       - name: Publish to npm
-        run: npm publish --access public
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          case "$VERSION" in
+            *-*)
+              PRE="${VERSION#*-}"        # e.g. alpha.1
+              DIST_TAG="${PRE%%.*}"      # e.g. alpha
+              echo "Prerelease $VERSION → dist-tag '$DIST_TAG'"
+              npm publish --access public --tag "$DIST_TAG"
+              ;;
+            *)
+              echo "Stable $VERSION → dist-tag 'latest'"
+              npm publish --access public
+              ;;
+          esac
 
       - name: Extract changelog entry
         id: notes
