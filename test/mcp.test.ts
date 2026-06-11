@@ -1428,3 +1428,101 @@ describe("MCP HTTP Transport", () => {
     });
   });
 });
+
+// =============================================================================
+// Lazy-attach handshake (cold-start race regression)
+//
+// Claude Code drops the whole lotl tool surface for a session when the stdio
+// server doesn't answer initialize/tools/list before the client's startup
+// window elapses — because boot used to block on opening/attaching SQLite.
+// createMcpServer now accepts a *promise* for the store: tool definitions are
+// static, so the handshake answers immediately; a tool invoked before the
+// store attaches gets a clean retryable notice instead of hanging the server.
+//
+// This drives a real McpServer over an in-memory transport with a store whose
+// resolution we control, asserting the three contract points from the handover.
+// =============================================================================
+
+import { createMcpServer } from "../src/mcp/server.js";
+import { createStore as createLotlStore } from "../src/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+
+describe("MCP lazy-attach handshake", () => {
+  let lazyDbPath: string;
+  let lazyConfigDir: string;
+  const origIndexPath = process.env.INDEX_PATH;
+  const origConfigDir = process.env.LOTL_CONFIG_DIR;
+
+  beforeAll(async () => {
+    lazyDbPath = `/tmp/qmd-mcp-lazy-test-${Date.now()}.sqlite`;
+    const db = openDatabase(lazyDbPath);
+    initTestDatabase(db);
+    seedTestData(db);
+    const lazyConfig: CollectionConfig = {
+      collections: { docs: { path: "/test/docs", pattern: "**/*.md" } },
+    };
+    syncConfigToDb(db, lazyConfig);
+    db.close();
+
+    const configPrefix = join(tmpdir(), `qmd-mcp-lazy-config-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    lazyConfigDir = await mkdtemp(configPrefix);
+    await writeFile(join(lazyConfigDir, "index.yml"), YAML.stringify(lazyConfig));
+
+    process.env.INDEX_PATH = lazyDbPath;
+    process.env.LOTL_CONFIG_DIR = lazyConfigDir;
+  });
+
+  afterAll(async () => {
+    if (origIndexPath !== undefined) process.env.INDEX_PATH = origIndexPath;
+    else delete process.env.INDEX_PATH;
+    if (origConfigDir !== undefined) process.env.LOTL_CONFIG_DIR = origConfigDir;
+    else delete process.env.LOTL_CONFIG_DIR;
+
+    try { unlinkSync(lazyDbPath); } catch {}
+    try {
+      const files = await readdir(lazyConfigDir);
+      for (const f of files) await unlink(join(lazyConfigDir, f));
+      await rmdir(lazyConfigDir);
+    } catch {}
+  });
+
+  test("tools/list answers before the store attaches; pending calls are retryable; calls succeed after attach", async () => {
+    // A real store, but its resolution is gated behind a deferred we control —
+    // simulating a slow SQLite attach that hasn't finished at handshake time.
+    const realStore = await createLotlStore({ dbPath: lazyDbPath });
+    let resolveStore!: (s: typeof realStore) => void;
+    const storePromise = new Promise<typeof realStore>((r) => { resolveStore = r; });
+
+    const server = await createMcpServer(storePromise);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+
+    const client = new Client({ name: "lazy-probe", version: "1.0.0" });
+    await client.connect(clientTransport);
+
+    try {
+      // (1) tools/list resolves with the full static surface while store is pending.
+      const list = await client.listTools();
+      const names = list.tools.map((t) => t.name);
+      expect(names.length).toBeGreaterThan(0);
+      expect(names).toContain("doc_status");
+      expect(names).toContain("doc_search");
+
+      // (2) A tool invoked before attach returns the retryable notice — not a hang,
+      // not a crash. The server stays alive (the next call below proves it).
+      const pending = await client.callTool({ name: "doc_status", arguments: {} });
+      expect(pending.isError).toBe(true);
+      expect(JSON.stringify(pending.content)).toMatch(/still attaching/i);
+
+      // (3) Once the store resolves, the same call succeeds.
+      resolveStore(realStore);
+      const ok = await client.callTool({ name: "doc_status", arguments: {} });
+      expect(ok.isError).toBeFalsy();
+      expect(JSON.stringify(ok.content)).toMatch(/Index Status/);
+    } finally {
+      await client.close();
+      await realStore.close();
+    }
+  }, 30000);
+});

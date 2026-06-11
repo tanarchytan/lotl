@@ -110,55 +110,25 @@ function getPackageVersion(): string {
 // =============================================================================
 
 /**
- * Build dynamic server instructions from actual index state.
- * Injected into the LLM's system prompt via MCP initialize response —
- * gives the LLM immediate context about what's searchable without a tool call.
+ * Build static server instructions.
+ *
+ * Sent in the MCP `initialize` response, which the client awaits during the
+ * cold-start handshake. This MUST be DB-free: reading the SQLite index here
+ * re-introduces the boot race that drops the whole tool surface for a session
+ * (see startMcpServer). Live, index-aware context (collections, doc counts,
+ * contexts) is available on demand via the `briefing` tool, which goes through
+ * the ready-gate once the store has attached.
  */
-// Cached instructions — rebuilt every 60 seconds or on first call
-let _instructionsCache: { text: string; builtAt: number } | null = null;
-const INSTRUCTIONS_TTL_MS = 60_000;
-
-async function buildInstructions(store: LotlStore): Promise<string> {
-  if (_instructionsCache && Date.now() - _instructionsCache.builtAt < INSTRUCTIONS_TTL_MS) {
-    return _instructionsCache.text;
-  }
-  const status = await store.getStatus();
-  const contexts = await store.listContexts();
-  const globalCtx = await store.getGlobalContext();
+function buildStaticInstructions(): string {
   const lines: string[] = [];
 
   // --- What is this? ---
-  lines.push(`Lotl is your local search engine over ${status.totalDocuments} markdown documents.`);
-  if (globalCtx) lines.push(`Context: ${globalCtx}`);
-
-  // --- What's searchable? ---
-  if (status.collections.length > 0) {
-    lines.push("");
-    lines.push("Collections (scope with `collections` parameter for better accuracy):");
-    for (const col of status.collections) {
-      const rootCtx = contexts.find(c => c.collection === col.name && (c.path === "" || c.path === "/"));
-      const desc = rootCtx ? ` — ${rootCtx.context}` : "";
-      lines.push(`  - "${col.name}" (${col.documents} docs)${desc}`);
-      // Show sub-path contexts for hierarchical filtering
-      const subCtxs = contexts.filter(c => c.collection === col.name && c.path !== "" && c.path !== "/");
-      for (const sub of subCtxs) {
-        lines.push(`      ${sub.path}: ${sub.context}`);
-      }
-    }
-    lines.push("");
-    lines.push("IMPORTANT: Always scope searches to relevant collections when possible.");
-    lines.push("Searching within specific collections is significantly more accurate than searching everything.");
-    lines.push("Example: searches=[{type:'lex', query:'deployment'}], collections=['arachnid-vault']");
-  }
-
-  // --- Capability gaps ---
-  if (!status.hasVectorIndex) {
-    lines.push("");
-    lines.push("Note: No vector embeddings yet. Run `qmd embed` to enable semantic search (vec/hyde).");
-  } else if (status.needsEmbedding > 0) {
-    lines.push("");
-    lines.push(`Note: ${status.needsEmbedding} documents need embedding. Run \`qmd embed\` to update.`);
-  }
+  lines.push("Lotl is your local search engine over your indexed markdown documents.");
+  lines.push("Call the `briefing` tool for a live map of collections, document counts, and contexts before searching.");
+  lines.push("");
+  lines.push("IMPORTANT: Always scope searches to relevant collections when possible.");
+  lines.push("Searching within specific collections is significantly more accurate than searching everything.");
+  lines.push("Example: searches=[{type:'lex', query:'deployment'}], collections=['arachnid-vault']");
 
   // --- Search tool ---
   lines.push("");
@@ -188,23 +158,55 @@ async function buildInstructions(store: LotlStore): Promise<string> {
   lines.push("  - Use `minScore: 0.5` to filter low-confidence results.");
   lines.push("  - Results include a `context` field describing the content type.");
 
-  const result = lines.join("\n");
-  _instructionsCache = { text: result, builtAt: Date.now() };
-  return result;
+  return lines.join("\n");
 }
 
 /**
  * Create an MCP server with all Lotl tools, resources, and prompts registered.
  * Shared by both stdio and HTTP transports.
  */
-async function createMcpServer(store: LotlStore): Promise<McpServer> {
-  const server = new McpServer(
-    { name: "lotl", version: getPackageVersion() },
-    { instructions: await buildInstructions(store) },
+export async function createMcpServer(storeInput: LotlStore | Promise<LotlStore>): Promise<McpServer> {
+  // Lazy-attach gate: the store may still be opening/attaching SQLite when the
+  // client completes the `initialize` + `tools/list` handshake. Tool *definitions*
+  // are static (no DB needed), so registration below proceeds immediately; an
+  // actual tool *invocation* funnels through ready() and gets a clean retryable
+  // notice if the index hasn't finished attaching yet — the server never blocks
+  // the handshake and never hangs the whole transport.
+  let _store: LotlStore | null = null;
+  let _err: unknown = null;
+  const _ready = Promise.resolve(storeInput).then(
+    (s) => { _store = s; },
+    (e) => { _err = e; },
   );
 
-  // Pre-fetch default collection names for search tools
-  const defaultCollectionNames = await store.getDefaultCollectionNames();
+  // Brief grace so a call landing milliseconds before attach completes succeeds
+  // rather than bouncing the caller with a spurious "still attaching".
+  const SOFT_WAIT_MS = 250;
+  async function ready(): Promise<LotlStore> {
+    if (_store) return _store;
+    if (_err) throw _err;
+    await Promise.race([_ready, new Promise((r) => setTimeout(r, SOFT_WAIT_MS))]);
+    if (_err) throw _err;
+    if (!_store) {
+      // Retryable, non-fatal: surfaces as a normal tool error result; server stays up.
+      throw new Error("Lotl index is still attaching — retry in a moment.");
+    }
+    return _store;
+  }
+
+  // Memoized default collection names — computed on first use after attach,
+  // never at registration time (that would re-block the handshake).
+  let _defaultCollectionNames: string[] | null = null;
+  async function getDefaultCollectionNames(store: LotlStore): Promise<string[]> {
+    if (_defaultCollectionNames) return _defaultCollectionNames;
+    _defaultCollectionNames = await store.getDefaultCollectionNames();
+    return _defaultCollectionNames;
+  }
+
+  const server = new McpServer(
+    { name: "lotl", version: getPackageVersion() },
+    { instructions: buildStaticInstructions() },
+  );
 
 
   // ---------------------------------------------------------------------------
@@ -221,6 +223,7 @@ async function createMcpServer(store: LotlStore): Promise<McpServer> {
       mimeType: "text/markdown",
     },
     async (uri, { path }) => {
+      const store = await ready();
       // Decode URL-encoded path (MCP clients send encoded URIs)
       const pathStr = Array.isArray(path) ? path.join('/') : (path || '');
       const decodedPath = decodeURIComponent(pathStr);
@@ -345,6 +348,7 @@ Intent-aware lex (C++ performance, not sports):
       },
     },
     async ({ searches, limit, minScore, candidateLimit, collections, intent, rerank }) => {
+      const store = await ready();
       // Map to internal format
       const queries: ExpandedQuery[] = searches.map(s => ({
         type: s.type,
@@ -352,7 +356,7 @@ Intent-aware lex (C++ performance, not sports):
       }));
 
       // Use default collections if none specified
-      const effectiveCollections = collections ?? defaultCollectionNames;
+      const effectiveCollections = collections ?? await getDefaultCollectionNames(store);
 
       const results = await store.search({
         queries,
@@ -405,6 +409,7 @@ Intent-aware lex (C++ performance, not sports):
       },
     },
     async ({ file, fromLine, maxLines, lineNumbers }) => {
+      const store = await ready();
       // Support :line suffix in `file` (e.g. "foo.md:120") when fromLine isn't provided
       let parsedFromLine = fromLine;
       let lookup = file;
@@ -470,6 +475,7 @@ Intent-aware lex (C++ performance, not sports):
       },
     },
     async ({ pattern, maxLines, maxBytes, lineNumbers }) => {
+      const store = await ready();
       const { docs, errors } = await store.multiGet(pattern, { includeBody: true, maxBytes: maxBytes || DEFAULT_MULTI_GET_MAX_BYTES });
 
       if (docs.length === 0 && errors.length === 0) {
@@ -538,6 +544,7 @@ Intent-aware lex (C++ performance, not sports):
       inputSchema: {},
     },
     async () => {
+      const store = await ready();
       const status: StatusResult = await store.getStatus();
 
       const summary = [
@@ -575,6 +582,7 @@ Intent-aware lex (C++ performance, not sports):
       inputSchema: {},
     },
     async () => {
+      const store = await ready();
       const status: StatusResult = await store.getStatus();
       const contexts = await store.listContexts();
       const globalCtx = await store.getGlobalContext();
@@ -632,6 +640,7 @@ Intent-aware lex (C++ performance, not sports):
       },
     },
     async ({ text, category, scope, importance, metadata }) => {
+      const store = await ready();
       const db = store.internal.db;
       const result = await memoryStore(db, { text, category, scope, importance, metadata });
       const msg = result.status === "created"
@@ -662,6 +671,7 @@ Intent-aware lex (C++ performance, not sports):
       },
     },
     async ({ items }) => {
+      const store = await ready();
       const db = store.internal.db;
       const results = await memoryStoreBatch(db, items);
       const created = results.filter(r => r.status === "created").length;
@@ -685,6 +695,7 @@ Intent-aware lex (C++ performance, not sports):
       },
     },
     async ({ scopes, dimensions }) => {
+      const store = await ready();
       const db = store.internal.db;
       ensureScopePartitions(db, dimensions, scopes);
       return {
@@ -708,6 +719,7 @@ Intent-aware lex (C++ performance, not sports):
       },
     },
     async ({ query, scope, category, limit }) => {
+      const store = await ready();
       const db = store.internal.db;
       const results = await memoryRecall(db, { query, scope, category, limit });
       if (results.length === 0) {
@@ -743,6 +755,7 @@ Intent-aware lex (C++ performance, not sports):
       },
     },
     async ({ id }) => {
+      const store = await ready();
       const db = store.internal.db;
       const result = memoryForget(db, id);
       return {
@@ -766,6 +779,7 @@ Intent-aware lex (C++ performance, not sports):
       },
     },
     async ({ id, text, importance, category, metadata }) => {
+      const store = await ready();
       const db = store.internal.db;
       const result = await memoryUpdate(db, { id, text, importance, category, metadata });
       return {
@@ -783,6 +797,7 @@ Intent-aware lex (C++ performance, not sports):
       inputSchema: {},
     },
     async () => {
+      const store = await ready();
       const db = store.internal.db;
       const stats = memoryStats(db);
       const lines = [
@@ -812,6 +827,7 @@ Intent-aware lex (C++ performance, not sports):
       },
     },
     async ({ query, scope, category, perTierLimit }) => {
+      const store = await ready();
       const db = store.internal.db;
       const { core, working, peripheral } = await memoryRecallTiered(db, {
         query, scope, category, perTierLimit,
@@ -845,6 +861,7 @@ Intent-aware lex (C++ performance, not sports):
       },
     },
     async ({ scope, windowDays, maxEntries, minImportance }) => {
+      const store = await ready();
       const db = store.internal.db;
       const pack = memoryPushPack(db, { scope, windowDays, maxEntries, minImportance });
       const lines = pack.length > 0
@@ -875,6 +892,7 @@ Intent-aware lex (C++ performance, not sports):
       },
     },
     async ({ text, scope }) => {
+      const store = await ready();
       const db = store.internal.db;
       const result = await extractAndStore(db, text, scope);
       const lines = [
@@ -910,6 +928,7 @@ Intent-aware lex (C++ performance, not sports):
       },
     },
     async ({ id }: { id: string }) => {
+      const store = await ready();
       const db = store.internal.db;
       const row = db.prepare(`SELECT * FROM memories WHERE id = ?`).get(id) as
         | { id: string; text: string; category: string; scope: string; importance: number; tier: string; created_at: number; metadata: string | null }
@@ -948,6 +967,7 @@ Intent-aware lex (C++ performance, not sports):
       },
     },
     async ({ scope, category, tier, limit, offset }: { scope?: string; category?: string; tier?: string; limit?: number; offset?: number }) => {
+      const store = await ready();
       const db = store.internal.db;
       const clauses: string[] = [];
       const params: unknown[] = [];
@@ -996,6 +1016,7 @@ Intent-aware lex (C++ performance, not sports):
       },
     },
     async ({ question, scope, limit, maxFacts }: { question: string; scope?: string; limit?: number; maxFacts?: number }) => {
+      const store = await ready();
       const db = store.internal.db;
       const topK = Math.min(Math.max(1, limit ?? 20), 100);
       const recalled = await memoryRecall(db, { query: question, scope, limit: topK });
@@ -1039,6 +1060,7 @@ Intent-aware lex (C++ performance, not sports):
       },
     },
     async ({ scope, windowDays, minMemoriesForEviction }: { scope?: string; windowDays?: number; minMemoriesForEviction?: number }) => {
+      const store = await ready();
       const db = store.internal.db;
       const cleanup = runCleanupPass(db, {
         minMemoriesForEviction: minMemoriesForEviction ?? 1000,
@@ -1098,6 +1120,7 @@ Intent-aware lex (C++ performance, not sports):
       },
     },
     async ({ subject, predicate, object, valid_from, confidence }) => {
+      const store = await ready();
       const db = store.internal.db;
       const result = knowledgeStore(db, { subject, predicate, object, valid_from, confidence });
       const msg = result.invalidated.length > 0
@@ -1127,6 +1150,7 @@ Intent-aware lex (C++ performance, not sports):
       },
     },
     async ({ subject, predicate, object, as_of, limit, scope }) => {
+      const store = await ready();
       const db = store.internal.db;
       const results = knowledgeQuery(db, { subject, predicate, object, as_of, limit, scope });
       if (results.length === 0) {
@@ -1154,6 +1178,7 @@ Intent-aware lex (C++ performance, not sports):
       },
     },
     async ({ id }) => {
+      const store = await ready();
       const db = store.internal.db;
       const result = knowledgeInvalidate(db, id);
       return {
@@ -1171,6 +1196,7 @@ Intent-aware lex (C++ performance, not sports):
       inputSchema: {},
     },
     async () => {
+      const store = await ready();
       const db = store.internal.db;
       const entities = knowledgeEntities(db);
       if (entities.length === 0) {
@@ -1191,6 +1217,7 @@ Intent-aware lex (C++ performance, not sports):
       },
     },
     async ({ subject }) => {
+      const store = await ready();
       const db = store.internal.db;
       const facts = knowledgeTimeline(db, subject);
       if (facts.length === 0) return { content: [{ type: "text", text: `No facts found for "${subject}".` }] };
@@ -1212,6 +1239,7 @@ Intent-aware lex (C++ performance, not sports):
       inputSchema: {},
     },
     async () => {
+      const store = await ready();
       const db = store.internal.db;
       const stats = knowledgeStats(db);
       return {
@@ -1245,6 +1273,7 @@ Intent-aware lex (C++ performance, not sports):
       },
     },
     async ({ operation, collection, force }) => {
+      const store = await ready();
       const internal = store.internal;
       const db = internal.db;
 
@@ -1318,11 +1347,18 @@ Intent-aware lex (C++ performance, not sports):
 
 export async function startMcpServer(): Promise<void> {
   const configPath = getConfigPath();
-  const store = await createStore({
+  // Kick off the SQLite attach but DO NOT block the handshake on it. The store
+  // attaches in the background; createMcpServer gates every handler on it. This
+  // makes `initialize` + `tools/list` answer in milliseconds even on a cold or
+  // large index, so the client never drops the tool surface on a boot race.
+  const storePromise = createStore({
     dbPath: getDefaultDbPath(),
     ...(existsSync(configPath) ? { configPath } : {}),
   });
-  const server = await createMcpServer(store);
+  // Don't let an unhandled rejection crash the process before a tool call
+  // surfaces the error through ready(); the gate re-throws it on first use.
+  storePromise.catch(() => {});
+  const server = await createMcpServer(storePromise);
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
@@ -1343,13 +1379,22 @@ export type HttpServerHandle = {
  */
 export async function startMcpHttpServer(port: number, options?: { quiet?: boolean }): Promise<HttpServerHandle> {
   const configPath = getConfigPath();
-  const store = await createStore({
+  // Attach in the background (parity with the stdio path) so the listener comes
+  // up immediately. MCP sessions gate on the store via createMcpServer; the REST
+  // endpoint resolves it lazily on first request.
+  const storePromise = createStore({
     dbPath: getDefaultDbPath(),
     ...(existsSync(configPath) ? { configPath } : {}),
   });
+  storePromise.catch(() => {});
 
-  // Pre-fetch default collection names for REST endpoint
-  const defaultCollectionNames = await store.getDefaultCollectionNames();
+  // Lazily resolve + memoize the default collection names for the REST endpoint.
+  let _defaultCollectionNames: string[] | null = null;
+  async function restDefaultCollectionNames(store: LotlStore): Promise<string[]> {
+    if (_defaultCollectionNames) return _defaultCollectionNames;
+    _defaultCollectionNames = await store.getDefaultCollectionNames();
+    return _defaultCollectionNames;
+  }
 
   // Session map: each client gets its own McpServer + Transport pair (MCP spec requirement).
   // The store is shared — it's stateless SQLite, safe for concurrent access.
@@ -1364,7 +1409,7 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
         log(`${ts()} New session ${sessionId} (${sessions.size} active)`);
       },
     });
-    const server = await createMcpServer(store);
+    const server = await createMcpServer(storePromise);
     await server.connect(transport);
 
     transport.onclose = () => {
@@ -1445,8 +1490,11 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
           query: String(s.query || ""),
         }));
 
+        // Resolve the store (waits for the background attach on first request)
+        const store = await storePromise;
+
         // Use default collections if none specified
-        const effectiveCollections = params.collections ?? defaultCollectionNames;
+        const effectiveCollections = params.collections ?? await restDefaultCollectionNames(store);
 
         const results = await store.search({
           queries,
@@ -1588,7 +1636,13 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
     }
     sessions.clear();
     httpServer.close();
-    await store.close();
+    // Close the store only if the background attach resolved; if it failed or is
+    // still pending there is nothing to close.
+    try {
+      await (await storePromise).close();
+    } catch {
+      /* attach failed — nothing to close */
+    }
   };
 
   process.on("SIGTERM", async () => {
