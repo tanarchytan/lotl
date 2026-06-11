@@ -15,6 +15,15 @@
 - `getDefaultDbPath()` now creates the parent directory of a custom `INDEX_PATH` so a fresh per-project path (e.g. `.lotl/index.sqlite`) works on first run — better-sqlite3 does not create missing directories.
 - `memoryStoreBatch` (`memory_add_batch`) no longer crashes with `no such table: memories_vec` when there are no embeddings (`LOTL_ONNX` off / no provider / never embedded). It prepared the vec0 INSERT unconditionally — and `prepare()` throws at prepare time against a missing table — whereas single `memoryStore` degraded to FTS-only. The batch now guards vec-table creation + the prepared insert and falls back to FTS-only storage.
 
+### Changed
+
+- Added a root `.ignore` so code-graph tooling (vexp / graphify) indexes production source only — excludes `evaluate/`, `devnotes/`, `docs/`, `skills/`, `coverage/`, `setup/`, `scripts/`, `hooks/`, `CHANGELOG.md`, and `graphify-out/`. Dev-tooling only: ripgrep-style, no effect on git tracking or the published package. (Cut the local code index from ~2,015 to ~932 nodes.)
+
+### Removed
+
+- Dead internal re-export shims `src/store/collections.ts` and `src/store/db.ts` — the `store.ts` facade already re-exports the same symbols directly from `context.js`/`factory.js`/`path.js`; both had zero importers and Node's `exports` map blocks external deep-imports, so there is no public-API impact.
+- Unused helpers `formatGpuCapabilities()` (`src/llm/gpu-probe.ts`) and `isValidCollectionName()` (`src/collections.ts`) — exported but never referenced anywhere in the codebase.
+
 ## [1.2.0-alpha.1] - 2026-05-20
 
 First alpha of the vault export feature. Lotl now derives a human-browsable
