@@ -178,13 +178,3 @@ async function probeOsGpuInfo(): Promise<OsGpuInfo> {
 
   return { vramBytes: 0 };
 }
-
-export function formatGpuCapabilities(caps: GpuCapabilities): string {
-  if (!caps.available) return "no GPU (WebGPU adapter unavailable)";
-  const parts: string[] = [];
-  parts.push(`${caps.vendor ?? "unknown"}${caps.architecture ? " " + caps.architecture : ""}`);
-  parts.push(caps.type ?? "unknown");
-  if (caps.vramBytes) parts.push(`${(caps.vramBytes / 2 ** 30).toFixed(1)} GiB VRAM`);
-  if (caps.maxBufferSize) parts.push(`maxBuffer ${(caps.maxBufferSize / 2 ** 30).toFixed(1)} GiB`);
-  return parts.join(", ");
-}

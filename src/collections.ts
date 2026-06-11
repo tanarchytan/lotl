@@ -501,12 +501,3 @@ export function configExists(): boolean {
   const path = configSource.path || getConfigFilePath();
   return existsSync(path);
 }
-
-/**
- * Validate a collection name
- * Collection names must be valid and not contain special characters
- */
-export function isValidCollectionName(name: string): boolean {
-  // Allow alphanumeric, hyphens, underscores
-  return /^[a-zA-Z0-9_-]+$/.test(name);
-}

@@ -1,0 +1,25 @@
+# vexp / ripgrep ignore — index production source only.
+# Mirrors .graphifyignore intent. Does NOT affect git tracking (only ripgrep/vexp).
+# Removing these from the code graph cuts ~half the indexed files / nodes.
+
+# Eval harnesses (throwaway LoCoMo/LongMemEval rigs, not app source)
+evaluate/
+
+# Developer notes (research/sessions/architecture markdown)
+devnotes/
+
+# Generated / vendored docs + packaged skills
+docs/
+skills/
+
+# Generated coverage report assets
+coverage/
+
+# One-shot installer + release/build scripts (not graphed as app source)
+setup/
+scripts/
+hooks/
+
+# Large generated/archival markdown
+CHANGELOG.md
+graphify-out/

@@ -80,9 +80,7 @@ Use `/release <version>` to cut a release. Add changelog entries under `## [Unre
   - `types.ts` — Shared types (`Store`, `SearchResult`, `DocumentResult`, `CollectionInfo`, etc.)
   - `constants.ts` — Tuning constants (RRF weights, chunk sizes, intent weights, default models)
   - `db-init.ts` — SQLite schema creation, FTS5/sqlite-vec table init, migrations
-  - `db.ts` — Thin re-export of `factory.js` and `path.js`
   - `path.ts` — Path resolution, virtual path (`lotl://`) parsing/building, Windows/Git Bash support
-  - `collections.ts` — Re-exports collection CRUD from `context.ts`
   - `store-collections.ts` — `store_collections` table CRUD, config-to-DB sync
   - `context.ts` — Collection listing, context retrieval/insertion, path-context queries
   - `documents.ts` — Document CRUD, handelize, docid, content hashing, glob matching
