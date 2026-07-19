@@ -1990,6 +1990,8 @@ function parseCLI() {
       // memory serve options
       host: { type: "string" },
       token: { type: "string" },
+      // memory compact options ("force" reused from the embed/skill-install flag above)
+      apply: { type: "boolean" },
     },
     allowPositionals: true,
     strict: false, // Allow unknown options to pass through
@@ -2688,8 +2690,16 @@ if (isMain) {
           process.once("SIGINT", shutdown);
           process.once("SIGTERM", shutdown);
         });
+      } else if (subCmd === "compact") {
+        const apply = cli.values.apply === true;
+        const force = cli.values.force === true;
+        const { compactAllMemories } = await import("../memory/compact.js");
+        const r = await compactAllMemories(db, { apply, force });
+        console.log(`Scanned ${r.scanned} over-budget memories; ${apply ? `compacted ${r.compacted}` : `would compact ${r.scanned - r.review.length}`}.`);
+        if (r.review.length) console.log(`Review (low-confidence, not applied): ${r.review.join(", ")}`);
+        if (!apply) console.log("Dry-run. Re-run with --apply to write (originals archived in metadata.original).");
       } else {
-        console.error("Usage: lotl memory <store|recall|forget|extract|stats|decay|import|export|serve> [args]");
+        console.error("Usage: lotl memory <store|recall|forget|extract|stats|decay|import|export|serve|compact> [args]");
         process.exit(1);
       }
       closeDb();
