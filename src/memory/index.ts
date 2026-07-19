@@ -15,6 +15,7 @@ import { getDecayScore } from "./decay.js";
 import { classifyMemory } from "./patterns.js";
 import { knowledgeQuery, type KnowledgeEntry } from "./knowledge.js";
 import { chunkDocument } from "../store/chunking.js";
+import { isOverBudget, compactMemoryText } from "../okf/budget.js";
 import {
   STRONG_SIGNAL_MIN_SCORE, STRONG_SIGNAL_MIN_GAP,
   MEMORY_FTS_OVERFETCH, MEMORY_VEC_K_MULTIPLIER,
@@ -601,8 +602,19 @@ export async function memoryStore(
   if (options.turns) {
     options = { ...options, text: turnsToText(options.turns, options.userOnly === true) };
   }
-  const text = (options.text ?? "").trim();
+  let text = (options.text ?? "").trim();
   if (!text) throw new Error("Memory text cannot be empty");
+
+  // OKF progressive disclosure: compact over-budget text before it is
+  // hashed/embedded/stored, so dedup + the vector index reflect the
+  // caveman-compressed body. The one-liner summary rides along in
+  // metadata.description. Gate lets callers/tests opt out.
+  let metadata = options.metadata;
+  if (process.env.LOTL_OKF !== "off" && isOverBudget(text)) {
+    const { description, body } = await compactMemoryText(text);
+    text = body || text.slice(0, 500);
+    metadata = { ...(metadata ?? {}), description };
+  }
 
   const hash = contentHash(text);
   const category = options.category || classifyMemory(text);
@@ -675,7 +687,7 @@ export async function memoryStore(
   db.prepare(`
     INSERT INTO memories (id, text, content_hash, category, scope, importance, tier, access_count, created_at, metadata)
     VALUES (?, ?, ?, ?, ?, ?, 'peripheral', 0, ?, ?)
-  `).run(id, text, hash, category, scope, importance, now, options.metadata ? JSON.stringify(options.metadata) : null);
+  `).run(id, text, hash, category, scope, importance, now, metadata ? JSON.stringify(metadata) : null);
 
   // Insert vector
   if (embedding) {
