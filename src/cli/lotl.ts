@@ -1987,6 +1987,9 @@ function parseCLI() {
       http: { type: "boolean" },
       daemon: { type: "boolean" },
       port: { type: "string" },
+      // memory serve options
+      host: { type: "string" },
+      token: { type: "string" },
     },
     allowPositionals: true,
     strict: false, // Allow unknown options to pass through
@@ -2652,8 +2655,41 @@ if (isMain) {
         const filePath = cli.args[1] || "memories.json";
         const count = exportMemories(db, filePath);
         console.log(`Exported ${count} memories to ${filePath}`);
+      } else if (subCmd === "serve") {
+        const host = cli.values.host ? String(cli.values.host) : undefined;
+        const port = cli.values.port ? parseInt(String(cli.values.port), 10) : undefined;
+        const token = cli.values.token ? String(cli.values.token) : undefined;
+        const { startMemoryServer } = await import("../memory/server.js");
+        let server;
+        try {
+          server = await startMemoryServer(db, { host, port, token });
+        } catch (err) {
+          // Idempotent for auto-start (e.g. a VS Code folderOpen task, or a
+          // second editor window): if the port is already taken, assume an
+          // instance is up, report it, and exit cleanly instead of crashing.
+          if ((err as NodeJS.ErrnoException)?.code === "EADDRINUSE") {
+            console.log(`Memory server already running on ${host ?? "127.0.0.1"}:${port ?? 7071} — nothing to do.`);
+            closeDb();
+            break;
+          }
+          throw err;
+        }
+        const addr = server.address();
+        const shown = addr && typeof addr === "object" ? `${addr.address}:${addr.port}` : `${host ?? "127.0.0.1"}:${port ?? 7071}`;
+        const effectiveToken = token ?? process.env.LOTL_MEMORY_SERVE_TOKEN;
+        const url = `http://${shown}/${effectiveToken ? `?token=${effectiveToken}` : ""}`;
+        console.log(`Memory server on http://${shown}  (index: ${getDbPath()})`);
+        console.log(`Open: ${url}`);
+        if (!effectiveToken) console.log("Tip: set --token or LOTL_MEMORY_SERVE_TOKEN for an access token.");
+        console.log("Ctrl+C to stop.");
+        // Keep the process (and db) alive until interrupted.
+        await new Promise<void>((resolve) => {
+          const shutdown = () => { server.close(() => resolve()); };
+          process.once("SIGINT", shutdown);
+          process.once("SIGTERM", shutdown);
+        });
       } else {
-        console.error("Usage: lotl memory <store|recall|forget|extract|stats|decay|import|export> [args]");
+        console.error("Usage: lotl memory <store|recall|forget|extract|stats|decay|import|export|serve> [args]");
         process.exit(1);
       }
       closeDb();

@@ -195,6 +195,7 @@ lotl memory forget <id>                # Delete memory
 lotl memory extract <text>             # Extract from conversation
 lotl memory stats                      # Memory stats
 lotl memory decay                      # Run decay pass
+lotl memory serve [--port N] [--token]  # Local web UI to view/edit/delete memories (127.0.0.1)
 lotl memory import <file>              # Import memories
 lotl memory export [file.json]         # Export memories
 ```
