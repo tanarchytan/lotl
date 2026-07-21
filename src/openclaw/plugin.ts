@@ -142,6 +142,7 @@ const qmdPlugin = definePluginEntry({
     // Per-request state — scoped per message, not shared across agents
     let lastUserMessage = "";
     let activeScope = defaultScope;
+    let _okfIndexEmitted = false;
 
     api.logger.info(
       `tanarchy-lotl: registered (autoRecall: ${cfg.autoRecall}, autoCapture: ${cfg.autoCapture}, scope: ${defaultScope})`,
@@ -211,6 +212,23 @@ const qmdPlugin = definePluginEntry({
                 content: `Relevant memories:\n${memoryContext}`,
               });
             }
+          }
+
+          // OKF progressive disclosure: emit root index once per session
+          if (!_okfIndexEmitted) {
+            try {
+              const { SqliteConceptSource } = await import("../okf/source.js");
+              const { renderGroups } = await import("../okf/index-render.js");
+              const okfSource = new SqliteConceptSource(_db);
+              const indexText = renderGroups(okfSource.listGroups());
+              if (indexText && context.messages) {
+                context.messages.push({
+                  role: "system",
+                  content: "OKF knowledge bundle (use okf_index to drill, okf_get to open):\n" + indexText,
+                });
+              }
+            } catch { /* fail-open — don't block the prompt */ }
+            _okfIndexEmitted = true;
           }
         } catch (err) {
           api.logger.warn(`tanarchy-lotl recall failed: ${err}`);
@@ -471,6 +489,7 @@ const qmdPlugin = definePluginEntry({
       lastUserMessage = "";
       activeScope = defaultScope;
       sessionCount = 0;
+      _okfIndexEmitted = false;
     });
 
     // ========================================================================
