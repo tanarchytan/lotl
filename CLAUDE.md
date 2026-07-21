@@ -198,6 +198,10 @@ lotl memory decay                      # Run decay pass
 lotl memory serve [--port N] [--token]  # Local web UI to view/edit/delete memories (127.0.0.1)
 lotl memory import <file>              # Import memories
 lotl memory export [file.json]         # Export memories
+lotl memory compact [--apply]          # Compact over-budget memories (dry-run default)
+lotl okf index [group]                 # List OKF concept groups or drill into one
+lotl okf get <id>                      # Get one OKF concept by id
+lotl okf recall <query>                # Search memories + docs, returns index lines
 ```
 
 ## MCP Tools
@@ -207,6 +211,7 @@ CRUD-aligned naming (`{domain}_{verb}`).
 Document search: `doc_search`, `doc_get`, `doc_get_batch`, `doc_status`, `briefing`, `doc_manage`
 Memory: `memory_add`, `memory_add_batch`, `memory_search`, `memory_get`, `memory_list`, `memory_update`, `memory_delete`, `memory_extract`, `memory_reflect`, `memory_dream`, `memory_stats`, `memory_register_scopes`
 Knowledge: `knowledge_add`, `knowledge_search`, `knowledge_invalidate`, `knowledge_entities`, `knowledge_timeline`, `knowledge_stats`
+OKF progressive disclosure: `okf_index`, `okf_get`, `okf_recall`
 
 ## Important constraints
 
