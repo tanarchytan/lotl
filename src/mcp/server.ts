@@ -34,6 +34,9 @@ import {
 } from "../index.js";
 import { getConfigPath } from "../collections.js";
 import { deleteLLMCache, cleanupOrphanedVectors, vacuumDatabase, listCollections as storeListCollections, generateEmbeddings, reindexCollection, enableProductionMode } from "../store.js";
+import { SqliteConceptSource } from "../okf/source.js";
+import { renderGroups, renderRefs } from "../okf/index-render.js";
+import { okfRecall } from "../okf/recall.js";
 
 // SDK consumers importing this module directly (without going through qmd.ts)
 // would otherwise hit the production-mode guard on getDefaultDbPath. CLI users
@@ -119,7 +122,7 @@ function getPackageVersion(): string {
  * contexts) is available on demand via the `briefing` tool, which goes through
  * the ready-gate once the store has attached.
  */
-function buildStaticInstructions(): string {
+export function buildStaticInstructions(): string {
   const lines: string[] = [];
 
   // --- What is this? ---
@@ -153,6 +156,13 @@ function buildStaticInstructions(): string {
 
   // --- Non-obvious things that prevent mistakes ---
   lines.push("");
+  lines.push("");
+  lines.push("Knowledge is exposed as OKF concepts. Use progressive disclosure:");
+  lines.push("  - `okf_index` — root groups (collections, memory scopes, entities).");
+  lines.push("  - `okf_index({group})` — drill into one group, paginated.");
+  lines.push("  - `okf_get({id})` — open one concept (frontmatter + body).");
+  lines.push("  - `okf_recall({query})` — search, returns index lines (no full bodies).");
+  lines.push("Do NOT expect memories pre-loaded — call okf_index/okf_recall to discover.");
   lines.push("Tips:");
   lines.push("  - File paths in results are relative to their collection.");
   lines.push("  - Use `minScore: 0.5` to filter low-confidence results.");
@@ -1335,6 +1345,85 @@ Intent-aware lex (C++ performance, not sports):
       }
 
       return { content: [{ type: "text", text: `Unknown operation: ${operation}` }] };
+    }
+  );
+
+  // ---------------------------------------------------------------------------
+  // Tool: okf_index — Progressive disclosure: root groups or drill-in
+  // ---------------------------------------------------------------------------
+
+  server.registerTool(
+    "okf_index",
+    {
+      title: "OKF Index (progressive disclosure)",
+      description: "Navigate the OKF knowledge bundle. No args = root groups. Pass group= to drill in (paginated).",
+      annotations: { readOnlyHint: true, openWorldHint: false },
+      inputSchema: {
+        group: z.string().optional().describe("Group path (e.g. memory/global, docs/notes, entities)"),
+        limit: z.number().optional().describe("Max entries (default 50, max 500)"),
+        offset: z.number().optional().describe("Offset for pagination"),
+      },
+    },
+    async ({ group, limit, offset }) => {
+      const store = await ready();
+      const okfSource = new SqliteConceptSource(store.internal.db);
+      if (!group) {
+        return { content: [{ type: "text", text: renderGroups(okfSource.listGroups()) }] };
+      }
+      const { refs, total } = okfSource.listConcepts(group, { limit, offset });
+      return { content: [{ type: "text", text: renderRefs(refs) + "\n\n(" + refs.length + " of " + total + ")" }] };
+    }
+  );
+
+  // ---------------------------------------------------------------------------
+  // Tool: okf_get — Retrieve one concept by id
+  // ---------------------------------------------------------------------------
+
+  server.registerTool(
+    "okf_get",
+    {
+      title: "Get OKF Concept",
+      description: "Retrieve one OKF concept by id. Returns frontmatter + body.",
+      annotations: { readOnlyHint: true, openWorldHint: false },
+      inputSchema: {
+        id: z.string().describe("Concept id (e.g. memory/global/a1b2c3d4)"),
+      },
+    },
+    async ({ id }) => {
+      const store = await ready();
+      const okfSource = new SqliteConceptSource(store.internal.db);
+      const c = okfSource.getConcept(id);
+      if (!c) return { content: [{ type: "text", text: "not found: " + id }] };
+      const header = [
+        "type: " + c.type, "title: " + c.title, "description: " + c.description,
+        "tags: " + (c.tags.length ? c.tags.join(", ") : "(none)"),
+        "timestamp: " + (c.timestamp || "(none)"),
+        "links: " + (c.links.length ? c.links.join(", ") : "(none)"),
+      ].join("\n");
+      return { content: [{ type: "text", text: header + "\n\n" + c.body }] };
+    }
+  );
+
+  // ---------------------------------------------------------------------------
+  // Tool: okf_recall — Search memories + docs, return compact index lines
+  // ---------------------------------------------------------------------------
+
+  server.registerTool(
+    "okf_recall",
+    {
+      title: "OKF Recall",
+      description: "Search memories + docs, returning a compact OKF index (id + type + one-line description, NEVER full bodies). Use okf_get to open concepts you need. Byte-capped at ~2KB.",
+      annotations: { readOnlyHint: true, openWorldHint: false },
+      inputSchema: {
+        query: z.string().describe("Search query"),
+        limit: z.number().optional().describe("Max results (default 8)"),
+      },
+    },
+    async ({ query, limit }) => {
+      const store = await ready();
+      const refs = await okfRecall(store.internal, query, { limit });
+      if (!refs.length) return { content: [{ type: "text", text: "(no matches)" }] };
+      return { content: [{ type: "text", text: renderRefs(refs) }] };
     }
   );
 
