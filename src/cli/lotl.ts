@@ -2706,6 +2706,46 @@ if (isMain) {
       break;
     }
 
+    case "okf": {
+      const subCmd = cli.args[0];
+      if (subCmd === "index") {
+        const { SqliteConceptSource } = await import("../okf/source.js");
+        const { renderGroups, renderRefs } = await import("../okf/index-render.js");
+        const okfSource = new SqliteConceptSource(getDb());
+        const group = cli.args[1];
+        if (group) {
+          const { refs, total } = okfSource.listConcepts(group);
+          console.log(renderRefs(refs));
+          console.log("\n(" + refs.length + " of " + total + ")");
+        } else {
+          console.log(renderGroups(okfSource.listGroups()));
+        }
+        closeDb();
+      } else if (subCmd === "get") {
+        const { SqliteConceptSource } = await import("../okf/source.js");
+        const okfSource = new SqliteConceptSource(getDb());
+        const id = cli.args[1];
+        if (!id) { console.error("Usage: lotl okf get <id>"); closeDb(); process.exit(1); }
+        const c = okfSource.getConcept(id);
+        if (!c) { console.log("not found: " + id); closeDb(); process.exit(1); }
+        console.log(["type: " + c.type, "title: " + c.title, "description: " + c.description].join("\n"));
+        console.log("\n" + c.body);
+        closeDb();
+      } else if (subCmd === "recall") {
+        const { okfRecall } = await import("../okf/recall.js");
+        const { renderRefs } = await import("../okf/index-render.js");
+        const query = cli.args[1];
+        if (!query) { console.error("Usage: lotl okf recall <query>"); closeDb(); process.exit(1); }
+        const refs = await okfRecall({ db: getDb(), searchFTS: () => [] }, query);
+        console.log(refs.length ? renderRefs(refs) : "(no matches)");
+        closeDb();
+      } else {
+        console.error("Usage: lotl okf index|get|recall [args]");
+        closeDb(); process.exit(1);
+      }
+      break;
+    }
+
     case "vault": {
       const exit = await runVaultCommand(cli.args);
       process.exit(exit);

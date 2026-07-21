@@ -29,6 +29,7 @@ export function showHelp(): void {
   console.log("  lotl skill show/install        - Show or install the packaged Lotl skill");
   console.log("  lotl mcp                       - Start the MCP server (stdio transport for AI agents)");
   console.log("  lotl bench <fixture.json>      - Run search quality benchmarks against a fixture file");
+  console.log("  lotl okf index|get|recall      - Browse indexed concepts (OKF progressive-disclosure)");
   console.log("");
   console.log("Collections & context:");
   console.log("  lotl collection add/list/remove/rename/show   - Manage indexed folders");
