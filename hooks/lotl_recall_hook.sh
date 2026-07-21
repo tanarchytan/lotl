@@ -44,8 +44,11 @@ PROMPT="$(printf '%s' "$INPUT" | jq -r '.prompt // ""' 2>/dev/null)" || emit_not
 [ -n "$PROMPT" ] && [ "${#PROMPT}" -ge 8 ] || emit_nothing
 
 # Fast keyword recall, hard-bounded. FTS only (no model load).
-RESULTS="$(LOTL_ONNX=off LOTL_MEMORY_RERANK=off timeout "$RECALL_TIMEOUT" \
-  "$LOTL_BIN" memory recall "$PROMPT" 2>/dev/null | head -n "$MAX_LINES")" || emit_nothing
+if [ "${LOTL_OKF:-on}" = "off" ]; then
+  RESULTS="$(LOTL_ONNX=off LOTL_MEMORY_RERANK=off timeout "$RECALL_TIMEOUT" "$LOTL_BIN" memory recall "$PROMPT" 2>/dev/null | head -n "$MAX_LINES")" || emit_nothing
+else
+  RESULTS="$(LOTL_ONNX=off timeout "$RECALL_TIMEOUT" "$LOTL_BIN" okf recall "$PROMPT" 2>/dev/null | head -n "$MAX_LINES")" || emit_nothing
+fi
 
 # Nothing useful → inject nothing.
 if [ -z "$RESULTS" ] || printf '%s' "$RESULTS" | grep -qiE 'no memories|no results|^usage:'; then
@@ -53,7 +56,7 @@ if [ -z "$RESULTS" ] || printf '%s' "$RESULTS" | grep -qiE 'no memories|no resul
 fi
 
 # Emit as UserPromptSubmit additionalContext (jq handles JSON escaping).
-jq -n --arg ctx "Relevant memories from lotl (recalled automatically):
+jq -n --arg ctx "Relevant lotl concepts (open with okf_get):
 $RESULTS" \
   '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $ctx}}' \
   2>/dev/null || emit_nothing
