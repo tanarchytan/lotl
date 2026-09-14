@@ -185,7 +185,14 @@ export async function createMcpServer(storeInput: LotlStore | Promise<LotlStore>
   let _store: LotlStore | null = null;
   let _err: unknown = null;
   const _ready = Promise.resolve(storeInput).then(
-    (s) => { _store = s; },
+    (s) => {
+      _store = s;
+      // Tiers only move when a decay pass runs. The OpenClaw plugin does this
+      // on gateway_start; MCP-only users never got one, so every memory stayed
+      // `peripheral` and tiered recall degraded to a flat list.
+      try { runDecayPass(s.internal.db); }
+      catch (err) { console.error("startup decay failed:", err); }
+    },
     (e) => { _err = e; },
   );
 
