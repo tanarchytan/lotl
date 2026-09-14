@@ -220,7 +220,7 @@ OKF progressive disclosure: `okf_index`, `okf_get`, `okf_recall`
 - **Never run `bun build --compile`** — breaks the shell wrapper and sqlite-vec
 - **Jiti compatibility** — No top-level await anywhere in the import chain. node-llama-cpp lazy-loaded via dynamic import. db.ts uses synchronous createRequire.
 - Node.js ≥22 required (Bun dropped)
-- **Build script** — `scripts/build.mjs` cleans `dist/`, syncs `openclaw.plugin.json` version with `package.json`, runs `tsc -p tsconfig.build.json`, and injects the shebang into `dist/cli/lotl.js`. The `src/bench/` harness is part of the build because the CLI `bench` subcommand imports it.
+- **Build script** — `scripts/build.mjs` cleans `dist/`, syncs `openclaw.plugin.json` version with `package.json`, runs `tsc -p tsconfig.build.json`, and injects the shebang into `dist/cli/lotl.js`. Always invoke it as `npm run build`: a bare `node scripts/build.mjs` cleans `dist/` and then fails, because `tsc` is only on PATH under npm. The `src/bench/` harness is part of the build because the CLI `bench` subcommand imports it.
 
 ## OpenClaw Plugin Install
 
