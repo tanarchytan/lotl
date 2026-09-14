@@ -20,9 +20,15 @@ function firstLine(text: string): string {
   const line = (text || "").split("\n").map(s => s.trim()).find(Boolean) ?? "";
   return line.length > DESC_MAX ? line.slice(0, DESC_MAX - 1) + "…" : line;
 }
-function metaDescription(metadata: string | null): string | null {
+function metaField(metadata: string | null, key: "description" | "original"): string | null {
   if (!metadata) return null;
-  try { const m = JSON.parse(metadata); return typeof m?.description === "string" ? m.description : null; } catch { return null; }
+  try { const m = JSON.parse(metadata); return typeof m?.[key] === "string" ? m[key] : null; } catch { return null; }
+}
+/** Full text for a memory: the archived pre-compaction original when the OKF
+ *  byte budget shortened `text`, otherwise `text` itself. Progressive
+ *  disclosure serves the index line from `text`, the whole thing from here. */
+function memBody(r: MemRow): string {
+  return metaField(r.metadata, "original") ?? r.text;
 }
 function isoOrNull(ms: number | null): string | null { return ms ? new Date(ms).toISOString() : null; }
 /** Extract [[id]] wiki-links and bundle-relative markdown links as outbound concept ids. */
@@ -97,7 +103,8 @@ export class SqliteConceptSource implements ConceptSource {
       ).all(scope, rest) as MemRow[];
       if (rows.length !== 1) return null; // 0 = not found; >1 = ambiguous (should not happen with 8-char ids)
       const r = rows[0]!;
-      return { ...this.memRowToRef(r), tags: [], timestamp: isoOrNull(r.last_accessed ?? r.created_at), links: extractLinks(r.text), body: r.text };
+      const body = memBody(r);
+      return { ...this.memRowToRef(r), tags: [], timestamp: isoOrNull(r.last_accessed ?? r.created_at), links: extractLinks(body), body };
     }
 
     if (kind === "entities") {
@@ -124,6 +131,6 @@ export class SqliteConceptSource implements ConceptSource {
 
   private memRowToRef(r: MemRow): ConceptRef {
     return { id: buildMemoryId(r.scope, r.id), type: memoryCategoryToType(r.category),
-             title: firstLine(r.text).slice(0, 60), description: metaDescription(r.metadata) ?? firstLine(r.text) };
+             title: firstLine(r.text).slice(0, 60), description: metaField(r.metadata, "description") ?? firstLine(r.text) };
   }
 }
