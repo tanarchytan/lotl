@@ -15,7 +15,7 @@ import { getDecayScore } from "./decay.js";
 import { classifyMemory } from "./patterns.js";
 import { knowledgeQuery, type KnowledgeEntry } from "./knowledge.js";
 import { chunkDocument } from "../store/chunking.js";
-import { isOverBudget, compactMemoryText } from "../okf/budget.js";
+import { isOverBudget, compactMemoryText, BODY_MAX } from "../okf/budget.js";
 import {
   STRONG_SIGNAL_MIN_SCORE, STRONG_SIGNAL_MIN_GAP,
   MEMORY_FTS_OVERFETCH, MEMORY_VEC_K_MULTIPLIER,
@@ -608,12 +608,14 @@ export async function memoryStore(
   // OKF progressive disclosure: compact over-budget text before it is
   // hashed/embedded/stored, so dedup + the vector index reflect the
   // caveman-compressed body. The one-liner summary rides along in
-  // metadata.description. Gate lets callers/tests opt out.
+  // metadata.description, the full text in metadata.original so okf_get can
+  // serve it on demand. Gate lets callers/tests opt out.
   let metadata = options.metadata;
   if (process.env.LOTL_OKF !== "off" && isOverBudget(text)) {
-    const { description, body } = await compactMemoryText(text);
-    text = body || text.slice(0, 500);
-    metadata = { ...(metadata ?? {}), description };
+    const original = text;
+    const { description, body } = await compactMemoryText(original);
+    text = body || original.slice(0, BODY_MAX);
+    metadata = { ...(metadata ?? {}), description, original };
   }
 
   const hash = contentHash(text);
