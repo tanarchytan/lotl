@@ -661,7 +661,7 @@ Intent-aware lex (C++ performance, not sports):
     async ({ text, category, scope, importance, metadata }) => {
       const store = await ready();
       const db = store.internal.db;
-      const result = await memoryStore(db, { text, category, scope, importance, metadata });
+      const result = await memoryStore(db, { text, category, scope, importance, metadata, actor: "agent:mcp" });
       const msg = result.status === "created"
         ? `Memory stored (id: ${result.id})`
         : `Duplicate found (existing id: ${result.duplicate_id})`;
@@ -1403,10 +1403,13 @@ Intent-aware lex (C++ performance, not sports):
       const okfSource = new SqliteConceptSource(store.internal.db);
       const c = okfSource.getConcept(id);
       if (!c) return { content: [{ type: "text", text: "not found: " + id }] };
+      // OKF v0.2 §13.1 replaced the bare `timestamp` with `generated: {by, at}`;
+      // `status` is §5.4 and is omitted when stable.
       const header = [
         "type: " + c.type, "title: " + c.title, "description: " + c.description,
         "tags: " + (c.tags.length ? c.tags.join(", ") : "(none)"),
-        "timestamp: " + (c.timestamp || "(none)"),
+        `generated: { by: ${c.generatedBy}, at: ${c.timestamp || "(none)"} }`,
+        ...(c.status ? ["status: " + c.status] : []),
         "links: " + (c.links.length ? c.links.join(", ") : "(none)"),
       ].join("\n");
       return { content: [{ type: "text", text: header + "\n\n" + c.body }] };

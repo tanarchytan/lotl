@@ -13,6 +13,10 @@ import type { Database } from "../db.js";
 import { classifyMemory, extractPreferences, hasMemorySignal, type PatternCategory } from "./patterns.js";
 import { redactPrivate } from "./redact.js";
 
+/** OKF §5.2 actor. Inferred from a transcript, not asserted by the user — the
+ *  distinction recall needs when an extracted memory contradicts a typed one. */
+const EXTRACTOR_ACTOR = "process:lotl/extractor";
+
 // Note: memoryStore + knowledgeStore passed as parameters to break circular import
 type StoreFn = (db: Database, opts: any) =>
   Promise<{ id: string; status: "created" | "duplicate"; duplicate_id?: string }>;
@@ -300,6 +304,7 @@ export async function extractAndStore(
       scope,
       importance: mem.importance,
       metadata,
+      actor: EXTRACTOR_ACTOR,
     });
     if (result.status === "created") {
       stored++;
@@ -330,6 +335,7 @@ export async function extractAndStore(
       scope,
       importance: 0.4,
       metadata,
+      actor: EXTRACTOR_ACTOR,
     });
     if (result.status === "created") stored++;
     else duplicates++;

@@ -3,7 +3,7 @@ import { listCollections } from "../store/context.js";
 import { knowledgeEntities, knowledgeAbout } from "../memory/knowledge.js";
 import {
   buildDocId, buildMemoryId, buildEntityId, memoryCategoryToType, parseConceptId, conceptKind,
-  type Concept, type ConceptRef, type ConceptGroup,
+  DEFAULT_ACTOR, type Concept, type ConceptRef, type ConceptGroup,
 } from "./concept.js";
 
 const DESC_MAX = 120;
@@ -20,7 +20,7 @@ function firstLine(text: string): string {
   const line = (text || "").split("\n").map(s => s.trim()).find(Boolean) ?? "";
   return line.length > DESC_MAX ? line.slice(0, DESC_MAX - 1) + "…" : line;
 }
-function metaField(metadata: string | null, key: "description" | "original"): string | null {
+function metaField(metadata: string | null, key: "description" | "original" | "actor" | "status"): string | null {
   if (!metadata) return null;
   try { const m = JSON.parse(metadata); return typeof m?.[key] === "string" ? m[key] : null; } catch { return null; }
 }
@@ -31,10 +31,19 @@ function memBody(r: MemRow): string {
   return metaField(r.metadata, "original") ?? r.text;
 }
 function isoOrNull(ms: number | null): string | null { return ms ? new Date(ms).toISOString() : null; }
-/** Row -> compact index ref. Exported so other okf/ modules (e.g. timeline.ts) reuse it instead of duplicating. */
+/** Row -> compact index ref. Exported so other okf/ modules (e.g. timeline.ts) reuse it instead of duplicating.
+ *  Draft status is the one lifecycle signal worth the index-line bytes: it
+ *  changes whether an agent bothers opening the concept at all. */
 export function memRowToRef(r: MemRow): ConceptRef {
+  const description = metaField(r.metadata, "description") ?? firstLine(r.text);
   return { id: buildMemoryId(r.scope, r.id), type: memoryCategoryToType(r.category),
-           title: firstLine(r.text).slice(0, 60), description: metaField(r.metadata, "description") ?? firstLine(r.text) };
+           title: firstLine(r.text).slice(0, 60),
+           description: memStatus(r) === "draft" ? `[draft] ${description}` : description };
+}
+/** OKF §5.4 lifecycle. Only `draft` is representable: lotl hard-deletes
+ *  memories, so nothing is ever kept around in a `deprecated` state. */
+function memStatus(r: MemRow): "draft" | undefined {
+  return metaField(r.metadata, "status") === "draft" ? "draft" : undefined;
 }
 /** Extract [[id]] wiki-links and bundle-relative markdown links as outbound concept ids. */
 function extractLinks(body: string): string[] {
@@ -104,7 +113,9 @@ export class SqliteConceptSource implements ConceptSource {
       const r = this.getMemoryRow(id);
       if (!r) return null;
       const body = memBody(r);
-      return { ...memRowToRef(r), tags: [], timestamp: isoOrNull(r.last_accessed ?? r.created_at), links: extractLinks(body), body };
+      return { ...memRowToRef(r), tags: [], timestamp: isoOrNull(r.last_accessed ?? r.created_at),
+               generatedBy: metaField(r.metadata, "actor") ?? DEFAULT_ACTOR, status: memStatus(r),
+               links: extractLinks(body), body };
     }
 
     if (kind === "entities") {
@@ -113,7 +124,7 @@ export class SqliteConceptSource implements ConceptSource {
       const facts = knowledgeAbout(this.db, subject);
       const body = facts.map(f => `- ${f.predicate} ${f.object}`).join("\n");
       return { id, type: "Entity", title: subject, description: facts[0] ? `${facts[0].predicate} ${facts[0].object}` : "",
-               tags: [], timestamp: null, links: [], body };
+               tags: [], timestamp: null, generatedBy: DEFAULT_ACTOR, links: [], body };
     }
 
     // docs
@@ -126,7 +137,8 @@ export class SqliteConceptSource implements ConceptSource {
     ).get(collection, rest, `${rest}.md`) as { title: string; modified_at: string; body: string } | undefined;
     if (!row) return null;
     return { id, type: "Document", title: row.title || rest, description: "",
-             tags: [], timestamp: row.modified_at ?? null, links: extractLinks(row.body), body: row.body };
+             tags: [], timestamp: row.modified_at ?? null, generatedBy: DEFAULT_ACTOR,
+             links: extractLinks(row.body), body: row.body };
   }
 
   /** Raw memory row by concept id (0 = not found; >1 shouldn't happen with 8-char ids -> treated as not found). */

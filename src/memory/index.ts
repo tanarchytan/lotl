@@ -16,6 +16,7 @@ import { classifyMemory } from "./patterns.js";
 import { knowledgeQuery, type KnowledgeEntry } from "./knowledge.js";
 import { chunkDocument } from "../store/chunking.js";
 import { isOverBudget, compactMemoryText, BODY_MAX } from "../okf/budget.js";
+import { DEFAULT_ACTOR } from "../okf/concept.js";
 import { redactPrivate } from "./redact.js";
 import {
   STRONG_SIGNAL_MIN_SCORE, STRONG_SIGNAL_MIN_GAP,
@@ -97,6 +98,12 @@ export type MemoryStoreOptions = {
   scope?: string;
   importance?: number;
   metadata?: Record<string, unknown>;
+  /**
+   * OKF §5.2 actor: who asserted this memory. `human:<id>` for something the
+   * user typed, `process:`/`agent:` for something inferred from a transcript.
+   * Recall surfaces it so an agent can break a tie between the two.
+   */
+  actor?: string;
   /**
    * When true, skip writing to memory_history. The history table tracks every
    * ADD/UPDATE/DELETE for audit + replay; bulk-ingest callers (eval harnesses,
@@ -618,12 +625,14 @@ export async function memoryStore(
   // caveman-compressed body. The one-liner summary rides along in
   // metadata.description, the full text in metadata.original so okf_get can
   // serve it on demand. Gate lets callers/tests opt out.
-  let metadata = options.metadata;
+  let metadata: Record<string, unknown> = { ...(options.metadata ?? {}), actor: options.actor ?? DEFAULT_ACTOR };
   if (process.env.LOTL_OKF !== "off" && isOverBudget(text)) {
     const original = text;
-    const { description, body } = await compactMemoryText(original);
+    const { description, body, lowConfidence } = await compactMemoryText(original);
     text = body || original.slice(0, BODY_MAX);
-    metadata = { ...(metadata ?? {}), description, original };
+    // A low-confidence compaction is OKF §5.4 `draft`: the body may have lost a
+    // load-bearing specific, so recall flags it rather than presenting it as fact.
+    metadata = { ...metadata, description, original, ...(lowConfidence ? { status: "draft" } : {}) };
   }
 
   const hash = contentHash(text);
@@ -869,7 +878,7 @@ export async function memoryStoreBatch(
       category: opts.category || classifyMemory(text),
       scope: opts.scope || "global",
       importance: Math.max(0, Math.min(1, opts.importance ?? 0.5)),
-      metadataJson: opts.metadata ? JSON.stringify(opts.metadata) : null,
+      metadataJson: JSON.stringify({ ...(opts.metadata ?? {}), actor: opts.actor ?? DEFAULT_ACTOR }),
       embedding: embeddings[j] ?? null,
       skipHistory: opts.skipHistory === true,
     });

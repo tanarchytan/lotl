@@ -2597,7 +2597,9 @@ if (isMain) {
       if (subCmd === "store" || subCmd === "add") {
         const text = cli.args.slice(1).join(" ");
         if (!text) { console.error("Usage: lotl memory store <text>"); process.exit(1); }
-        const result = await memoryStore(db, { text });
+        // Typed at the terminal by the user, so it outranks anything the
+        // extractor inferred when the two disagree (OKF §5.3 trust tiers).
+        const result = await memoryStore(db, { text, actor: "human:cli" });
         console.log(result.status === "created" ? `Stored: ${result.id}` : `Duplicate: ${result.duplicate_id}`);
       } else if (subCmd === "recall" || subCmd === "search") {
         const query = cli.args.slice(1).join(" ");

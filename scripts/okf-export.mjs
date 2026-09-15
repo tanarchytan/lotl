@@ -45,7 +45,9 @@ for (const g of groups) {
       `description: ${y(c.description)}`,
       c.tags.length ? `tags: [${c.tags.map(y).join(", ")}]` : null,
       // v0.2 renamed v0.1's bare `timestamp` to `generated: { by, at }` (§13.1).
-      c.timestamp ? `generated: { by: "process:lotl", at: ${y(c.timestamp)} }` : null,
+      c.timestamp ? `generated: { by: ${y(c.generatedBy)}, at: ${y(c.timestamp)} }` : null,
+      // §5.4: absent means stable, so only draft is ever emitted.
+      c.status ? `status: ${y(c.status)}` : null,
       c.links.length ? `links:` : null,
       ...c.links.map(l => `  - ${y(l)}`),
       "---",

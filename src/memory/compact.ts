@@ -39,10 +39,16 @@ export async function compactAllMemories(
 
     result.scanned++;
     const { description, body, lowConfidence } = await compactMemoryText(r.text, opts.chat);
-    if (lowConfidence && !opts.force) { result.review.push(r.id); continue; }
+    if (lowConfidence && !opts.force) {
+      result.review.push(r.id);
+      // The review queue is OKF §5.4 `draft`. Flag it in place (text left
+      // uncompacted) so recall marks it until a forced pass resolves it.
+      if (opts.apply && meta.status !== "draft") await memoryUpdate(db, { id: r.id, metadata: { ...meta, status: "draft" } });
+      continue;
+    }
     if (!opts.apply) continue;
 
-    await memoryUpdate(db, { id: r.id, text: body, metadata: { ...meta, original: r.text, description } });
+    await memoryUpdate(db, { id: r.id, text: body, metadata: { ...meta, status: undefined, original: r.text, description } });
     result.compacted++;
   }
 

@@ -2,7 +2,14 @@ export type ConceptKind = "docs" | "memory" | "entities";
 
 export interface ConceptRef { id: string; type: string; title: string; description: string; }
 export interface ConceptGroup { path: string; title: string; type: string; count: number; description: string; }
-export interface Concept extends ConceptRef { tags: string[]; timestamp: string | null; links: string[]; body: string; }
+/** `timestamp` + `generatedBy` render as OKF v0.2 `generated: { by, at }` (§5.2).
+ *  `status` is §5.4; absent means stable, so only `draft` is ever set. */
+export interface Concept extends ConceptRef { tags: string[]; timestamp: string | null; generatedBy: string; status?: "draft"; links: string[]; body: string; }
+
+/** OKF §5.2 actor for anything lotl produced itself. `human:`-prefixed actors
+ *  mark a memory the user asserted, which is the signal that decides a
+ *  conflict between a typed memory and one the extractor inferred. */
+export const DEFAULT_ACTOR = "process:lotl";
 
 const MEMORY_ID_LEN = 8;
 
