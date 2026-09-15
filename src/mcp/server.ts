@@ -44,7 +44,7 @@ import { okfTimeline } from "../okf/timeline.js";
 // already get this via src/cli/lotl.ts:110 — calling here is a noop for them
 // and a critical safety net for everyone else. Upstream tobi/qmd 9dd8a73.
 enableProductionMode();
-import { memoryStore, memoryStoreBatch, memoryRecall, memoryRecallTiered, memoryPushPack, memoryForget, memoryUpdate, memoryStats, runDecayPass, runCleanupPass, runReflectionPass, memoryReflect, extractAndStore, ensureScopePartitions, knowledgeStore, knowledgeQuery, knowledgeInvalidate, knowledgeEntities, knowledgeTimeline, knowledgeStats, MEMORY_CATEGORIES } from "../memory/index.js";
+import { memoryStore, memoryStoreBatch, memoryRecall, memoryRecallTiered, memoryPushPack, memoryForget, memoryUpdate, memoryStats, memoryMarkUsed, runDecayPass, runCleanupPass, runReflectionPass, memoryReflect, extractAndStore, ensureScopePartitions, knowledgeStore, knowledgeQuery, knowledgeInvalidate, knowledgeEntities, knowledgeTimeline, knowledgeStats, MEMORY_CATEGORIES } from "../memory/index.js";
 
 // =============================================================================
 // Types for structured content
@@ -824,6 +824,7 @@ Intent-aware lex (C++ performance, not sports):
         `\nBy tier: ${Object.entries(stats.byTier).map(([k, v]) => `${k}: ${v}`).join(', ') || 'none'}`,
         `By category: ${Object.entries(stats.byCategory).map(([k, v]) => `${k}: ${v}`).join(', ') || 'none'}`,
         `By scope: ${Object.entries(stats.byScope).map(([k, v]) => `${k}: ${v}`).join(', ') || 'none'}`,
+        `\nRecalled: ${stats.usage.recalled}, opened: ${stats.usage.used}, recalled but never opened: ${stats.usage.recalledNeverUsed}`,
       ];
       return {
         content: [{ type: "text", text: lines.join('\n') }],
@@ -959,6 +960,7 @@ Intent-aware lex (C++ performance, not sports):
       if (row.metadata) {
         try { parsed = JSON.parse(row.metadata) as Record<string, unknown>; } catch { /* ignore */ }
       }
+      memoryMarkUsed(db, row.id);
       const enriched = { ...row, metadata: parsed };
       return {
         content: [{ type: "text", text: `[${row.category}] (scope: ${row.scope}, tier: ${row.tier}) ${row.text}\n  id: ${row.id}` }],
@@ -1403,6 +1405,12 @@ Intent-aware lex (C++ performance, not sports):
       const okfSource = new SqliteConceptSource(store.internal.db);
       const c = okfSource.getConcept(id);
       if (!c) return { content: [{ type: "text", text: "not found: " + id }] };
+      // Opening the concept in full is a use, distinct from ranking into an
+      // okf_recall/okf_timeline index line.
+      if (id.startsWith("memory/")) {
+        const row = okfSource.getMemoryRow(id);
+        if (row) memoryMarkUsed(store.internal.db, row.id);
+      }
       // OKF v0.2 §13.1 replaced the bare `timestamp` with `generated: {by, at}`;
       // `status` is §5.4 and is omitted when stable.
       const header = [

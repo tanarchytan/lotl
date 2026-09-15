@@ -222,6 +222,17 @@ export function initializeDatabase(db: Database): void {
   if (!haveFactText) db.exec(`ALTER TABLE memories ADD COLUMN fact_text TEXT`);
   if (!haveFactEmbed) db.exec(`ALTER TABLE memories ADD COLUMN fact_embedding BLOB`);
 
+  // access_count conflates "surfaced in a result set" with "actually read".
+  // A memory that ranks into every recall and is never opened looks identical
+  // to one an agent opens every time. used_count separates them: it only
+  // increments when a concept/memory is opened in full (okf_get, memory_get).
+  // access_count keeps its exact old meaning and stays the sole decay input —
+  // the Weibull tunables were validated at n=500 against it, so switching
+  // promotion over to used_count is a benchmark question, not a refactor.
+  if (!memCols.some((c) => c.name === "used_count")) {
+    db.exec(`ALTER TABLE memories ADD COLUMN used_count INTEGER NOT NULL DEFAULT 0`);
+  }
+
   db.exec(`
     CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
       text, category, scope,

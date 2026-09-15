@@ -2093,21 +2093,40 @@ export async function memoryUpdate(
 // Memory stats
 // =============================================================================
 
+/**
+ * Record that a memory was opened in full, not merely surfaced in a result
+ * set. Deliberately does NOT touch access_count or last_accessed: those drive
+ * Weibull decay with tunables validated at n=500, and this is an additive
+ * signal collected so that switch can be decided on evidence.
+ */
+export function memoryMarkUsed(db: Database, id: string): void {
+  db.prepare(`UPDATE memories SET used_count = used_count + 1 WHERE id = ?`).run(id);
+}
+
 export function memoryStats(db: Database): {
   total: number;
   byTier: Record<string, number>;
   byCategory: Record<string, number>;
   byScope: Record<string, number>;
+  /** recalled = surfaced at least once; used = opened at least once. The gap
+   *  between them is the signal for whether promotion should key off use. */
+  usage: { recalled: number; used: number; recalledNeverUsed: number };
 } {
   const total = (db.prepare(`SELECT COUNT(*) as count FROM memories`).get() as { count: number }).count;
   const tierRows = db.prepare(`SELECT tier, COUNT(*) as count FROM memories GROUP BY tier`).all() as { tier: string; count: number }[];
   const catRows = db.prepare(`SELECT category, COUNT(*) as count FROM memories GROUP BY category`).all() as { category: string; count: number }[];
   const scopeRows = db.prepare(`SELECT scope, COUNT(*) as count FROM memories GROUP BY scope`).all() as { scope: string; count: number }[];
 
+  const usage = db.prepare(
+    `SELECT SUM(access_count > 0) AS recalled, SUM(used_count > 0) AS used,
+            SUM(access_count > 0 AND used_count = 0) AS recalledNeverUsed FROM memories`
+  ).get() as { recalled: number | null; used: number | null; recalledNeverUsed: number | null };
+
   return {
     total,
     byTier: Object.fromEntries(tierRows.map(r => [r.tier, r.count])),
     byCategory: Object.fromEntries(catRows.map(r => [r.category, r.count])),
     byScope: Object.fromEntries(scopeRows.map(r => [r.scope, r.count])),
+    usage: { recalled: usage.recalled ?? 0, used: usage.used ?? 0, recalledNeverUsed: usage.recalledNeverUsed ?? 0 },
   };
 }
