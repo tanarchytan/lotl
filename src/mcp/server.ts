@@ -37,6 +37,7 @@ import { deleteLLMCache, cleanupOrphanedVectors, vacuumDatabase, listCollections
 import { SqliteConceptSource } from "../okf/source.js";
 import { renderGroups, renderRefs } from "../okf/index-render.js";
 import { okfRecall } from "../okf/recall.js";
+import { okfTimeline } from "../okf/timeline.js";
 
 // SDK consumers importing this module directly (without going through qmd.ts)
 // would otherwise hit the production-mode guard on getDefaultDbPath. CLI users
@@ -162,6 +163,7 @@ export function buildStaticInstructions(): string {
   lines.push("  - `okf_index({group})` — drill into one group, paginated.");
   lines.push("  - `okf_get({id})` — open one concept (frontmatter + body).");
   lines.push("  - `okf_recall({query})` — search, returns index lines (no full bodies).");
+  lines.push("  - `okf_timeline({id})` — what happened around a concept in time (index lines, no full bodies).");
   lines.push("Do NOT expect memories pre-loaded — call okf_index/okf_recall to discover.");
   lines.push("Tips:");
   lines.push("  - File paths in results are relative to their collection.");
@@ -1430,6 +1432,29 @@ Intent-aware lex (C++ performance, not sports):
       const store = await ready();
       const refs = await okfRecall(store.internal, query, { limit });
       if (!refs.length) return { content: [{ type: "text", text: "(no matches)" }] };
+      return { content: [{ type: "text", text: renderRefs(refs) }] };
+    }
+  );
+
+  // ---------------------------------------------------------------------------
+  // Tool: okf_timeline — What happened around an anchor concept in time
+  // ---------------------------------------------------------------------------
+
+  server.registerTool(
+    "okf_timeline",
+    {
+      title: "OKF Timeline",
+      description: "Show memories chronologically adjacent to an anchor concept, plus knowledge-graph facts valid at that time. Compact OKF index lines only (NEVER full bodies) — use okf_get to open concepts you need. Byte-capped at ~2KB.",
+      annotations: { readOnlyHint: true, openWorldHint: false },
+      inputSchema: {
+        id: z.string().describe("Anchor concept id (e.g. memory/global/a1b2c3d4)"),
+        window: z.number().optional().describe("Neighbours before/after the anchor (default 3, max 10)"),
+      },
+    },
+    async ({ id, window }) => {
+      const store = await ready();
+      const refs = okfTimeline(store.internal.db, id, { window });
+      if (refs === null) return { content: [{ type: "text", text: "not found: " + id }] };
       return { content: [{ type: "text", text: renderRefs(refs) }] };
     }
   );

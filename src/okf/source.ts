@@ -14,7 +14,7 @@ export interface ConceptSource {
   getConcept(id: string): Concept | null;
 }
 
-type MemRow = { id: string; text: string; category: string; scope: string; metadata: string | null; last_accessed: number | null; created_at: number };
+export type MemRow = { id: string; text: string; category: string; scope: string; metadata: string | null; last_accessed: number | null; created_at: number };
 
 function firstLine(text: string): string {
   const line = (text || "").split("\n").map(s => s.trim()).find(Boolean) ?? "";
@@ -31,6 +31,11 @@ function memBody(r: MemRow): string {
   return metaField(r.metadata, "original") ?? r.text;
 }
 function isoOrNull(ms: number | null): string | null { return ms ? new Date(ms).toISOString() : null; }
+/** Row -> compact index ref. Exported so other okf/ modules (e.g. timeline.ts) reuse it instead of duplicating. */
+export function memRowToRef(r: MemRow): ConceptRef {
+  return { id: buildMemoryId(r.scope, r.id), type: memoryCategoryToType(r.category),
+           title: firstLine(r.text).slice(0, 60), description: metaField(r.metadata, "description") ?? firstLine(r.text) };
+}
 /** Extract [[id]] wiki-links and bundle-relative markdown links as outbound concept ids. */
 function extractLinks(body: string): string[] {
   const ids = new Set<string>();
@@ -66,7 +71,7 @@ export class SqliteConceptSource implements ConceptSource {
       const rows = this.db.prepare(
         `SELECT id, text, category, scope, metadata, last_accessed, created_at FROM memories WHERE scope=? ORDER BY created_at DESC LIMIT ? OFFSET ?`
       ).all(scope, limit, offset) as MemRow[];
-      return { refs: rows.map(r => this.memRowToRef(r)), total };
+      return { refs: rows.map(memRowToRef), total };
     }
 
     if (group === "entities") {
@@ -96,15 +101,10 @@ export class SqliteConceptSource implements ConceptSource {
     const kind = conceptKind(id);
 
     if (kind === "memory") {
-      const { group, rest } = parseConceptId(id);
-      const scope = group.slice("memory/".length);
-      const rows = this.db.prepare(
-        `SELECT id, text, category, scope, metadata, last_accessed, created_at FROM memories WHERE scope=? AND substr(id,1,8)=?`
-      ).all(scope, rest) as MemRow[];
-      if (rows.length !== 1) return null; // 0 = not found; >1 = ambiguous (should not happen with 8-char ids)
-      const r = rows[0]!;
+      const r = this.getMemoryRow(id);
+      if (!r) return null;
       const body = memBody(r);
-      return { ...this.memRowToRef(r), tags: [], timestamp: isoOrNull(r.last_accessed ?? r.created_at), links: extractLinks(body), body };
+      return { ...memRowToRef(r), tags: [], timestamp: isoOrNull(r.last_accessed ?? r.created_at), links: extractLinks(body), body };
     }
 
     if (kind === "entities") {
@@ -129,8 +129,13 @@ export class SqliteConceptSource implements ConceptSource {
              tags: [], timestamp: row.modified_at ?? null, links: extractLinks(row.body), body: row.body };
   }
 
-  private memRowToRef(r: MemRow): ConceptRef {
-    return { id: buildMemoryId(r.scope, r.id), type: memoryCategoryToType(r.category),
-             title: firstLine(r.text).slice(0, 60), description: metaField(r.metadata, "description") ?? firstLine(r.text) };
+  /** Raw memory row by concept id (0 = not found; >1 shouldn't happen with 8-char ids -> treated as not found). */
+  getMemoryRow(id: string): MemRow | null {
+    const { group, rest } = parseConceptId(id);
+    const scope = group.slice("memory/".length);
+    const rows = this.db.prepare(
+      `SELECT id, text, category, scope, metadata, last_accessed, created_at FROM memories WHERE scope=? AND substr(id,1,8)=?`
+    ).all(scope, rest) as MemRow[];
+    return rows.length === 1 ? rows[0]! : null;
   }
 }
