@@ -13,7 +13,7 @@
  */
 import type { Database } from "../db.js";
 import { memoryUpdate } from "./index.js";
-import { compactMemoryText, BODY_MAX } from "../okf/budget.js";
+import { compactMemoryText, BODY_MAX, COMPACT_MIN_OVERAGE } from "../okf/budget.js";
 
 type Row = { id: string; text: string; metadata: string | null };
 
@@ -27,7 +27,9 @@ export async function compactAllMemories(
   db: Database,
   opts: { apply: boolean; force?: boolean; chat?: (p: string) => Promise<string> },
 ): Promise<CompactResult> {
-  const rows = db.prepare(`SELECT id, text, metadata FROM memories WHERE length(text) > ?`).all(BODY_MAX) as Row[];
+  // Same floor as the write path (isOverBudget): don't spend an LLM call on
+  // text only marginally over BODY_MAX.
+  const rows = db.prepare(`SELECT id, text, metadata FROM memories WHERE length(text) > ?`).all(BODY_MAX * COMPACT_MIN_OVERAGE) as Row[];
   const result: CompactResult = { scanned: 0, compacted: 0, review: [] };
 
   for (const r of rows) {

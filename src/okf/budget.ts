@@ -1,8 +1,14 @@
 export const DESCRIPTION_MAX = 120;
 export const BODY_MAX = 500;
 
+// Compacting costs an LLM round trip and risks losing a load-bearing detail
+// to save a few bytes. 20% margin (600 chars at default BODY_MAX) absorbs
+// "just over 500" noise without masking genuinely long text. Env-overridable
+// so it can be swept without a recompile.
+export const COMPACT_MIN_OVERAGE = Number(process.env.LOTL_COMPACT_MIN_OVERAGE ?? 1.2);
+
 export function isOverBudget(text: string): boolean {
-  return (text?.length ?? 0) > BODY_MAX;
+  return (text?.length ?? 0) > BODY_MAX * COMPACT_MIN_OVERAGE;
 }
 
 export function heuristicCompact(text: string): { description: string; body: string } {

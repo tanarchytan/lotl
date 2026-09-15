@@ -1,10 +1,19 @@
 import { describe, test, expect } from "vitest";
-import { isOverBudget, heuristicCompact, compactMemoryText, BODY_MAX } from "../src/okf/budget.js";
+import { isOverBudget, heuristicCompact, compactMemoryText, BODY_MAX, COMPACT_MIN_OVERAGE } from "../src/okf/budget.js";
 
 describe("caveman budget", () => {
-  test("flags over-budget text", () => {
+  test("flags under-budget text as not over budget", () => {
     expect(isOverBudget("short")).toBe(false);
-    expect(isOverBudget("x".repeat(BODY_MAX + 1))).toBe(true);
+  });
+  test("text just over BODY_MAX but inside the margin is not over budget", () => {
+    const text = "x".repeat(BODY_MAX + 20); // 520 chars, under the 600-char default threshold
+    expect(isOverBudget(text)).toBe(false);
+    // caller (memoryStore) only compacts when isOverBudget is true, so this
+    // text would flow through byte-identical rather than being compacted
+  });
+  test("text well over the margin is over budget", () => {
+    const text = "x".repeat(Math.ceil(BODY_MAX * COMPACT_MIN_OVERAGE) + 1);
+    expect(isOverBudget(text)).toBe(true);
   });
   test("heuristic keeps first line as description and trims body", () => {
     const text = "first line fact\n" + "extra ".repeat(400);
