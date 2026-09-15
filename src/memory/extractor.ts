@@ -11,6 +11,7 @@
 
 import type { Database } from "../db.js";
 import { classifyMemory, extractPreferences, hasMemorySignal, type PatternCategory } from "./patterns.js";
+import { redactPrivate } from "./redact.js";
 
 // Note: memoryStore + knowledgeStore passed as parameters to break circular import
 type StoreFn = (db: Database, opts: any) =>
@@ -267,6 +268,16 @@ export async function extractAndStore(
   metadata?: Record<string, unknown>,
 ): Promise<ExtractionResult> {
   const store = storeFn!;
+
+  // Redact <private>...</private> spans before any extraction runs — a
+  // sentence-level split (extractHeuristic) could otherwise separate an
+  // opening/closing tag pair across chunks and leak the middle. Redacting
+  // the whole conversation up front also keeps private text out of the
+  // remote LLM call in extractWithLLM below.
+  text = redactPrivate(text);
+  if (!text.trim()) {
+    return { extracted: [], stored: 0, duplicates: 0, preferences: [], triples: 0 };
+  }
 
   // Try LLM first (Mem0-style atomic facts), fall back to heuristic
   let extracted = await extractWithLLM(text);

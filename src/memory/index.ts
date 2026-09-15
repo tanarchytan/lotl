@@ -16,6 +16,7 @@ import { classifyMemory } from "./patterns.js";
 import { knowledgeQuery, type KnowledgeEntry } from "./knowledge.js";
 import { chunkDocument } from "../store/chunking.js";
 import { isOverBudget, compactMemoryText, BODY_MAX } from "../okf/budget.js";
+import { redactPrivate } from "./redact.js";
 import {
   STRONG_SIGNAL_MIN_SCORE, STRONG_SIGNAL_MIN_GAP,
   MEMORY_FTS_OVERFETCH, MEMORY_VEC_K_MULTIPLIER,
@@ -605,6 +606,13 @@ export async function memoryStore(
   let text = (options.text ?? "").trim();
   if (!text) throw new Error("Memory text cannot be empty");
 
+  // Redact <private>...</private> spans FIRST — before the OKF budget block
+  // below can stash a verbatim copy into metadata.original, before hashing,
+  // before embedding, before any remote LLM call, and before the
+  // memory_history write. Nothing downstream of this line may see private text.
+  text = redactPrivate(text).trim();
+  if (!text) throw new Error("Memory text is empty after redacting <private> content");
+
   // OKF progressive disclosure: compact over-budget text before it is
   // hashed/embedded/stored, so dedup + the vector index reflect the
   // caveman-compressed body. The one-liner summary rides along in
@@ -757,9 +765,20 @@ export async function memoryStoreBatch(
     const raw = items[i]!;
     // Normalize turns → text up front. Callers may pass either `text` or
     // `turns`; if `turns` is set, it takes precedence + respects userOnly.
-    const it: MemoryStoreOptions = raw.turns
+    let it: MemoryStoreOptions = raw.turns
       ? { ...raw, text: turnsToText(raw.turns, raw.userOnly === true) }
       : raw;
+
+    // Redact <private>...</private> spans before this item is chunked,
+    // hashed, embedded, or inserted — same guarantee as memoryStore, applied
+    // here because memoryStoreBatch inlines its own INSERT instead of
+    // delegating to memoryStore.
+    if (it.text && it.text.trim()) {
+      const redacted = redactPrivate(it.text).trim();
+      if (!redacted) throw new Error("Memory text is empty after redacting <private> content");
+      if (redacted !== it.text) it = { ...it, text: redacted };
+    }
+
     if (it.chunk && it.text && it.text.length > CHUNK_MAX_CHARS) {
       // Auto-assign a stable doc_id if the caller didn't provide one, so
       // chunk grouping survives the round-trip through metadata.
