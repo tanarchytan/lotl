@@ -111,7 +111,7 @@ import {
 } from "../collections.js";
 import { getEmbeddedQmdSkillContent, getEmbeddedQmdSkillFiles } from "../embedded-skills.js";
 import { getRemoteConfig } from "../remote-config.js";
-import { memoryStore, memoryRecall, memoryForget, memoryStats, extractAndStore, runDecayPass, importConversation, exportMemories, importMemories, runCleanupPass, runReflectionPass } from "../memory/index.js";
+import { memoryStore, memoryRecall, memoryForget, memoryStats, memoryVerify, extractAndStore, runDecayPass, importConversation, exportMemories, importMemories, runCleanupPass, runReflectionPass } from "../memory/index.js";
 
 // Enable production mode - allows using default database path
 // Tests must set INDEX_PATH or use createStore() with explicit path
@@ -2617,6 +2617,12 @@ if (isMain) {
         if (!id) { console.error("Usage: lotl memory forget <id>"); process.exit(1); }
         const result = memoryForget(db, id);
         console.log(result.deleted ? `Deleted: ${id}` : `Not found: ${id}`);
+      } else if (subCmd === "verify") {
+        const id = cli.args[1];
+        if (!id) { console.error("Usage: lotl memory verify <id>"); process.exit(1); }
+        // human:cli is the top OKF §5.3 trust tier — a person confirmed this.
+        const result = memoryVerify(db, id, "human:cli");
+        console.log(result ? `Verified: ${id} (${result.verified.length} verifier(s))` : `Not found: ${id}`);
       } else if (subCmd === "extract") {
         const text = cli.args.slice(1).join(" ");
         if (!text) { console.error("Usage: lotl memory extract <text>"); process.exit(1); }
@@ -2629,6 +2635,7 @@ if (isMain) {
         console.log(`Tiers: ${Object.entries(stats.byTier).map(([k, v]) => `${k}: ${v}`).join(', ') || 'none'}`);
         console.log(`Categories: ${Object.entries(stats.byCategory).map(([k, v]) => `${k}: ${v}`).join(', ') || 'none'}`);
         console.log(`Scopes: ${Object.entries(stats.byScope).map(([k, v]) => `${k}: ${v}`).join(', ') || 'none'}`);
+        console.log(`Recalled: ${stats.usage.recalled}, opened: ${stats.usage.used}, recalled but never opened: ${stats.usage.recalledNeverUsed}`);
       } else if (subCmd === "decay") {
         const result = runDecayPass(db);
         console.log(`Processed ${result.processed}, promoted ${result.promoted}, demoted ${result.demoted}, stale ${result.stale}`);

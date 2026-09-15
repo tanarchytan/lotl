@@ -48,6 +48,9 @@ for (const g of groups) {
       c.timestamp ? `generated: { by: ${y(c.generatedBy)}, at: ${y(c.timestamp)} }` : null,
       // §5.4: absent means stable, so only draft is ever emitted.
       c.status ? `status: ${y(c.status)}` : null,
+      // §5.3: a sequence of {by, at} maps. Omitted entirely when unverified.
+      c.verified.length ? `verified:` : null,
+      ...c.verified.map(v => `  - { by: ${y(v.by)}, at: ${y(v.at)} }`),
       c.links.length ? `links:` : null,
       ...c.links.map(l => `  - ${y(l)}`),
       "---",

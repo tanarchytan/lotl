@@ -2103,6 +2103,29 @@ export function memoryMarkUsed(db: Database, id: string): void {
   db.prepare(`UPDATE memories SET used_count = used_count + 1 WHERE id = ?`).run(id);
 }
 
+/**
+ * OKF §5.3: record that `by` confirmed this memory's content. Distinct from
+ * `actor`/`generated.by`, which is who asserted it in the first place — the
+ * two together give the spec's trust tiers (unverified / machine-confirmed /
+ * human-reviewed).
+ *
+ * Re-verifying by the same actor refreshes its timestamp rather than
+ * appending, so the list stays one entry per verifier. Deliberately does not
+ * clear `status: draft`: that flags a lossy compaction, which is a different
+ * claim from "the content is right", and folding them would hide one.
+ */
+export function memoryVerify(db: Database, id: string, by: string): { verified: { by: string; at: string }[] } | null {
+  const row = db.prepare(`SELECT metadata FROM memories WHERE id = ?`).get(id) as { metadata: string | null } | undefined;
+  if (!row) return null;
+  let meta: Record<string, unknown> = {};
+  try { meta = row.metadata ? JSON.parse(row.metadata) : {}; } catch { meta = {}; }
+
+  const existing = Array.isArray(meta.verified) ? (meta.verified as { by: string; at: string }[]) : [];
+  const verified = [...existing.filter(v => v?.by !== by), { by, at: new Date().toISOString() }];
+  db.prepare(`UPDATE memories SET metadata = ? WHERE id = ?`).run(JSON.stringify({ ...meta, verified }), id);
+  return { verified };
+}
+
 export function memoryStats(db: Database): {
   total: number;
   byTier: Record<string, number>;

@@ -2,9 +2,20 @@ export type ConceptKind = "docs" | "memory" | "entities";
 
 export interface ConceptRef { id: string; type: string; title: string; description: string; }
 export interface ConceptGroup { path: string; title: string; type: string; count: number; description: string; }
+/** OKF §5.3: who confirmed a concept, as distinct from who generated it. */
+export interface Verification { by: string; at: string; }
+
 /** `timestamp` + `generatedBy` render as OKF v0.2 `generated: { by, at }` (§5.2).
- *  `status` is §5.4; absent means stable, so only `draft` is ever set. */
-export interface Concept extends ConceptRef { tags: string[]; timestamp: string | null; generatedBy: string; status?: "draft"; links: string[]; body: string; }
+ *  `status` is §5.4; absent means stable, so only `draft` is ever set.
+ *  `verified` is §5.3. */
+export interface Concept extends ConceptRef { tags: string[]; timestamp: string | null; generatedBy: string; status?: "draft"; verified: Verification[]; links: string[]; body: string; }
+
+/** OKF §5.3 trust tiers: no verifier = unverified, a non-`human:` verifier =
+ *  machine-confirmed, a `human:` verifier = human-reviewed. Only the top tier
+ *  earns a marker on index lines; the other two are the common case. */
+export function isHumanVerified(verified: Verification[]): boolean {
+  return verified.some(v => v.by.startsWith("human:"));
+}
 
 /** OKF §5.2 actor for anything lotl produced itself. `human:`-prefixed actors
  *  mark a memory the user asserted, which is the signal that decides a

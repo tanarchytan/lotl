@@ -3,7 +3,7 @@ import { listCollections } from "../store/context.js";
 import { knowledgeEntities, knowledgeAbout } from "../memory/knowledge.js";
 import {
   buildDocId, buildMemoryId, buildEntityId, memoryCategoryToType, parseConceptId, conceptKind,
-  DEFAULT_ACTOR, type Concept, type ConceptRef, type ConceptGroup,
+  DEFAULT_ACTOR, isHumanVerified, type Concept, type ConceptRef, type ConceptGroup, type Verification,
 } from "./concept.js";
 
 const DESC_MAX = 120;
@@ -35,15 +35,26 @@ function isoOrNull(ms: number | null): string | null { return ms ? new Date(ms).
  *  Draft status is the one lifecycle signal worth the index-line bytes: it
  *  changes whether an agent bothers opening the concept at all. */
 export function memRowToRef(r: MemRow): ConceptRef {
-  const description = metaField(r.metadata, "description") ?? firstLine(r.text);
+  const base = metaField(r.metadata, "description") ?? firstLine(r.text);
+  const marker = memStatus(r) === "draft" ? "[draft] " : isHumanVerified(memVerified(r.metadata)) ? "[verified] " : "";
   return { id: buildMemoryId(r.scope, r.id), type: memoryCategoryToType(r.category),
-           title: firstLine(r.text).slice(0, 60),
-           description: memStatus(r) === "draft" ? `[draft] ${description}` : description };
+           title: firstLine(r.text).slice(0, 60), description: `${marker}${base}` };
 }
 /** OKF §5.4 lifecycle. Only `draft` is representable: lotl hard-deletes
  *  memories, so nothing is ever kept around in a `deprecated` state. */
 function memStatus(r: MemRow): "draft" | undefined {
   return metaField(r.metadata, "status") === "draft" ? "draft" : undefined;
+}
+/** OKF §5.3 verifications off metadata. Tolerates hand-edited junk: anything
+ *  that isn't a {by, at} pair is dropped rather than failing the whole read. */
+export function memVerified(metadata: string | null): Verification[] {
+  if (!metadata) return [];
+  try {
+    const raw = JSON.parse(metadata)?.verified;
+    if (!Array.isArray(raw)) return [];
+    return raw.filter((v: unknown): v is Verification =>
+      typeof (v as Verification)?.by === "string" && typeof (v as Verification)?.at === "string");
+  } catch { return []; }
 }
 /** Extract [[id]] wiki-links and bundle-relative markdown links as outbound concept ids. */
 function extractLinks(body: string): string[] {
@@ -115,7 +126,7 @@ export class SqliteConceptSource implements ConceptSource {
       const body = memBody(r);
       return { ...memRowToRef(r), tags: [], timestamp: isoOrNull(r.last_accessed ?? r.created_at),
                generatedBy: metaField(r.metadata, "actor") ?? DEFAULT_ACTOR, status: memStatus(r),
-               links: extractLinks(body), body };
+               verified: memVerified(r.metadata), links: extractLinks(body), body };
     }
 
     if (kind === "entities") {
@@ -124,7 +135,7 @@ export class SqliteConceptSource implements ConceptSource {
       const facts = knowledgeAbout(this.db, subject);
       const body = facts.map(f => `- ${f.predicate} ${f.object}`).join("\n");
       return { id, type: "Entity", title: subject, description: facts[0] ? `${facts[0].predicate} ${facts[0].object}` : "",
-               tags: [], timestamp: null, generatedBy: DEFAULT_ACTOR, links: [], body };
+               tags: [], timestamp: null, generatedBy: DEFAULT_ACTOR, verified: [], links: [], body };
     }
 
     // docs
@@ -137,7 +148,7 @@ export class SqliteConceptSource implements ConceptSource {
     ).get(collection, rest, `${rest}.md`) as { title: string; modified_at: string; body: string } | undefined;
     if (!row) return null;
     return { id, type: "Document", title: row.title || rest, description: "",
-             tags: [], timestamp: row.modified_at ?? null, generatedBy: DEFAULT_ACTOR,
+             tags: [], timestamp: row.modified_at ?? null, generatedBy: DEFAULT_ACTOR, verified: [],
              links: extractLinks(row.body), body: row.body };
   }
 

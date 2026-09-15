@@ -44,7 +44,7 @@ import { okfTimeline } from "../okf/timeline.js";
 // already get this via src/cli/lotl.ts:110 — calling here is a noop for them
 // and a critical safety net for everyone else. Upstream tobi/qmd 9dd8a73.
 enableProductionMode();
-import { memoryStore, memoryStoreBatch, memoryRecall, memoryRecallTiered, memoryPushPack, memoryForget, memoryUpdate, memoryStats, memoryMarkUsed, runDecayPass, runCleanupPass, runReflectionPass, memoryReflect, extractAndStore, ensureScopePartitions, knowledgeStore, knowledgeQuery, knowledgeInvalidate, knowledgeEntities, knowledgeTimeline, knowledgeStats, MEMORY_CATEGORIES } from "../memory/index.js";
+import { memoryStore, memoryStoreBatch, memoryRecall, memoryRecallTiered, memoryPushPack, memoryForget, memoryUpdate, memoryStats, memoryMarkUsed, memoryVerify, runDecayPass, runCleanupPass, runReflectionPass, memoryReflect, extractAndStore, ensureScopePartitions, knowledgeStore, knowledgeQuery, knowledgeInvalidate, knowledgeEntities, knowledgeTimeline, knowledgeStats, MEMORY_CATEGORIES } from "../memory/index.js";
 
 // =============================================================================
 // Types for structured content
@@ -970,6 +970,33 @@ Intent-aware lex (C++ performance, not sports):
   );
 
   // ---------------------------------------------------------------------------
+  // Tool: memory_verify (OKF §5.3 — confirm a memory's content)
+  // ---------------------------------------------------------------------------
+
+  server.registerTool(
+    "memory_verify",
+    {
+      title: "Verify Memory",
+      description: "Record that this memory's content was confirmed (OKF §5.3). Distinct from who asserted it: a verified memory outranks an unverified one when two memories conflict. Verifying again as the same actor refreshes the timestamp rather than adding a duplicate.",
+      annotations: { readOnlyHint: false, openWorldHint: false },
+      inputSchema: {
+        id: z.string().describe("Memory id (as returned by memory_add or memory_search)"),
+      },
+    },
+    async ({ id }: { id: string }) => {
+      const store = await ready();
+      // agent:mcp is the middle trust tier — machine-confirmed, not
+      // human-reviewed. Only a person at the CLI earns `human:`.
+      const result = memoryVerify(store.internal.db, id, "agent:mcp");
+      if (!result) return { content: [{ type: "text", text: `Memory ${id} not found.` }] };
+      return {
+        content: [{ type: "text", text: `Verified ${id} (${result.verified.length} verifier(s): ${result.verified.map(v => v.by).join(", ")})` }],
+        structuredContent: result,
+      };
+    }
+  );
+
+  // ---------------------------------------------------------------------------
   // Tool: memory_list (Browse memories by filter)
   // ---------------------------------------------------------------------------
 
@@ -1418,6 +1445,7 @@ Intent-aware lex (C++ performance, not sports):
         "tags: " + (c.tags.length ? c.tags.join(", ") : "(none)"),
         `generated: { by: ${c.generatedBy}, at: ${c.timestamp || "(none)"} }`,
         ...(c.status ? ["status: " + c.status] : []),
+        ...(c.verified.length ? ["verified: " + c.verified.map(v => `{ by: ${v.by}, at: ${v.at} }`).join(", ")] : []),
         "links: " + (c.links.length ? c.links.join(", ") : "(none)"),
       ].join("\n");
       return { content: [{ type: "text", text: header + "\n\n" + c.body }] };

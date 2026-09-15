@@ -9,9 +9,9 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { openDatabase } from "../src/db.js";
 import { initializeDatabase } from "../src/store/db-init.js";
-import { memoryStore, memoryStoreBatch } from "../src/memory/index.js";
+import { memoryStore, memoryStoreBatch, memoryVerify } from "../src/memory/index.js";
 import { SqliteConceptSource } from "../src/okf/source.js";
-import { DEFAULT_ACTOR, buildMemoryId } from "../src/okf/concept.js";
+import { DEFAULT_ACTOR, buildMemoryId, isHumanVerified } from "../src/okf/concept.js";
 
 describe("okf trust + lifecycle", () => {
   let db: any, tmp: string;
@@ -65,5 +65,74 @@ describe("okf trust + lifecycle", () => {
     expect(c.status).toBe("draft");
     const { refs } = new SqliteConceptSource(db).listConcepts("memory/global");
     expect(refs.find(r => r.id === c.id)!.description.startsWith("[draft] ")).toBe(true);
+  });
+
+  test("a fresh memory is unverified", async () => {
+    const res = await memoryStore(db, { text: "Nobody has checked this.", scope: "global" });
+    const c = conceptFor((res as any).id)!;
+    expect(c.verified).toEqual([]);
+    expect(isHumanVerified(c.verified)).toBe(false);
+  });
+
+  test("verifying records the verifier and round-trips through the concept", async () => {
+    const res = await memoryStore(db, { text: "Staging DB is db-2.", scope: "global" });
+    const out = memoryVerify(db, (res as any).id, "human:cli")!;
+    expect(out.verified).toHaveLength(1);
+    expect(out.verified[0]!.by).toBe("human:cli");
+    const c = conceptFor((res as any).id)!;
+    expect(c.verified.map(v => v.by)).toEqual(["human:cli"]);
+    expect(isHumanVerified(c.verified)).toBe(true);
+  });
+
+  test("a machine verifier does not reach the human tier", async () => {
+    const res = await memoryStore(db, { text: "Cron runs at 04:00 UTC.", scope: "global" });
+    memoryVerify(db, (res as any).id, "agent:mcp");
+    const c = conceptFor((res as any).id)!;
+    expect(c.verified).toHaveLength(1);
+    expect(isHumanVerified(c.verified)).toBe(false);
+  });
+
+  test("re-verifying as the same actor refreshes rather than duplicating", async () => {
+    const res = await memoryStore(db, { text: "API base is /v2.", scope: "global" });
+    const first = memoryVerify(db, (res as any).id, "human:cli")!.verified[0]!.at;
+    await new Promise(r => setTimeout(r, 5));
+    const second = memoryVerify(db, (res as any).id, "human:cli")!;
+    expect(second.verified).toHaveLength(1);
+    expect(second.verified[0]!.at >= first).toBe(true);
+  });
+
+  test("distinct verifiers accumulate", async () => {
+    const res = await memoryStore(db, { text: "Retry budget is 3.", scope: "global" });
+    memoryVerify(db, (res as any).id, "agent:mcp");
+    memoryVerify(db, (res as any).id, "human:cli");
+    expect(conceptFor((res as any).id)!.verified.map(v => v.by)).toEqual(["agent:mcp", "human:cli"]);
+  });
+
+  test("verifying preserves existing metadata", async () => {
+    const res = await memoryStore(db, { text: "Owner is platform team.", scope: "global", actor: "human:cli" });
+    memoryVerify(db, (res as any).id, "human:cli");
+    // generated.by comes off metadata.actor, so a clobbering write would drop it.
+    expect(conceptFor((res as any).id)!.generatedBy).toBe("human:cli");
+  });
+
+  test("verifying a missing id returns null rather than throwing", () => {
+    expect(memoryVerify(db, "does-not-exist", "human:cli")).toBeNull();
+  });
+
+  test("a human-verified memory is marked on its index line", async () => {
+    const res = await memoryStore(db, { text: "Confirmed: the lock is advisory.", scope: "global" });
+    memoryVerify(db, (res as any).id, "human:cli");
+    const { refs } = new SqliteConceptSource(db).listConcepts("memory/global");
+    const id = buildMemoryId("global", (res as any).id);
+    expect(refs.find(r => r.id === id)!.description.startsWith("[verified] ")).toBe(true);
+  });
+
+  test("hand-edited junk in verified is dropped, not fatal", async () => {
+    const res = await memoryStore(db, { text: "Metadata got mangled.", scope: "global" });
+    const id = (res as any).id;
+    const meta = JSON.parse(db.prepare(`SELECT metadata FROM memories WHERE id = ?`).get(id).metadata ?? "{}");
+    db.prepare(`UPDATE memories SET metadata = ? WHERE id = ?`)
+      .run(JSON.stringify({ ...meta, verified: ["nope", { by: "human:cli" }, { by: "agent:mcp", at: "2026-01-01T00:00:00.000Z" }] }), id);
+    expect(conceptFor(id)!.verified.map(v => v.by)).toEqual(["agent:mcp"]);
   });
 });
