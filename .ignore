@@ -1,5 +1,5 @@
-# vexp / ripgrep ignore — index production source only.
-# Mirrors .graphifyignore intent. Does NOT affect git tracking (only ripgrep/vexp).
+# ripgrep ignore — index production source only.
+# Mirrors .graphifyignore intent. Does NOT affect git tracking (only ripgrep).
 # Removing these from the code graph cuts ~half the indexed files / nodes.
 
 # Eval harnesses (throwaway LoCoMo/LongMemEval rigs, not app source)

@@ -19,10 +19,9 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Tool working state — vexp MCP server, pi config, code-review-graph.
+# Tool working state — pi config, code-review-graph.
 # All auto-regenerated locally; tracking pollutes PRs with tool noise.
 # (.serena/, .claude/, .vscode/ already covered above)
-.vexp/
 .pi/
 .code-review-graph/
 
