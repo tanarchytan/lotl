@@ -590,18 +590,20 @@ export function ensureScopePartitions(db: Database, dimensions: number, scopes: 
 // =============================================================================
 
 /**
- * Nearest existing memory at or above `threshold`, for cosine dedup.
+ * Nearest existing memory of the same scope at or above `threshold`, for
+ * cosine dedup. Same scope only: a store in one scope must never be dropped
+ * as a duplicate of, or UPDATE/DELETE, a memory of another scope.
  *
  * Skips OKF-compacted rows (those with `metadata.original`): their vector is
  * of the compacted body, so a high score says the heads match, not that the
  * full texts do. Also skips vectors whose memory row is gone, so a stale
  * vector can never turn a store into a "duplicate" of nothing.
  */
-function findSimilarMemory(db: Database, embedding: number[], threshold: number = 0.9): { id: string; score: number } | null {
+function findSimilarMemory(db: Database, embedding: number[], scope: string, threshold: number = 0.9): { id: string; score: number } | null {
   try {
     const results = db.prepare(
-      `SELECT id, distance FROM memories_vec WHERE embedding MATCH ? AND k = 5`
-    ).all(new Float32Array(embedding)) as { id: string; distance: number }[];
+      `SELECT id, distance FROM memories_vec WHERE embedding MATCH ? AND k = 5 AND scope = ?`
+    ).all(new Float32Array(embedding), scope) as { id: string; distance: number }[];
     const metaOf = db.prepare(`SELECT metadata FROM memories WHERE id = ?`);
     for (const r of results) {
       const similarity = 1 - r.distance;
@@ -685,7 +687,7 @@ export async function memoryStore(
   // (see the invariant above), so the LLM conflict resolution below always
   // compares and merges full texts.
   if (embedding && !compacted) {
-    const similar = findSimilarMemory(db, embedding, 0.9);
+    const similar = findSimilarMemory(db, embedding, scope, 0.9);
     if (similar) {
       // Try LLM conflict resolution if available (from Mem0 pattern)
       try {
