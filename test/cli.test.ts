@@ -540,6 +540,22 @@ describe("CLI Multi-Get Command", () => {
     expect(stdout).toContain("Test Project");
     expect(stdout).toContain("Team Meeting");
   });
+
+  test("comma-separated collection/path entries resolve like `lotl get`", async () => {
+    const { stdout, exitCode } = await runQmd([
+      "multi-get",
+      "fixtures/README.md,fixtures/notes/meeting.md",
+    ], { dbPath: localDbPath });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("Test Project");
+    expect(stdout).toContain("Team Meeting");
+  });
+
+  test("comma-separated list with nothing found exits 1", async () => {
+    const { stderr, exitCode } = await runQmd(["multi-get", "nope-a.md,nope-b.md"], { dbPath: localDbPath });
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("File not found: nope-a.md");
+  });
 });
 
 describe("CLI Update Command", () => {
@@ -1157,22 +1173,6 @@ describe("CLI Memory Commands", () => {
     expect(stdout).toContain("Vitest");
   });
 
-  test("forgets a memory", async () => {
-    // Store first
-    const { stdout: storeOut } = await runQmd(["memory", "store", "Temporary memory to delete"], { dbPath: localDbPath });
-    const id = storeOut.match(/Stored:\s+(\S+)/)?.[1];
-    expect(id).toBeTruthy();
-
-    // Forget
-    const { stdout, exitCode } = await runQmd(["memory", "forget", id!], { dbPath: localDbPath });
-    expect(exitCode).toBe(0);
-    expect(stdout).toContain("Deleted:");
-  });
-
-  test("shows memory stats", async () => {
-    // Store a memory first
-    await runQmd(["memory", "store", "Stats test memory"], { dbPath: localDbPath });
-    const { stdout, exitCode } = await runQmd(["memory", "stats"], { dbPath: localDbPath });
   test("store honors --scope, --category and --importance without leaking them into the text", async () => {
     const { stdout, exitCode } = await runQmd(
       ["memory", "store", "Flag parsing probe alpha", "--scope", "flagscope", "--category", "fact", "--importance", "0.8"],
@@ -1253,6 +1253,22 @@ describe("CLI Memory Commands", () => {
     },
   );
 
+  test("forgets a memory", async () => {
+    // Store first
+    const { stdout: storeOut } = await runQmd(["memory", "store", "Temporary memory to delete"], { dbPath: localDbPath });
+    const id = storeOut.match(/Stored:\s+(\S+)/)?.[1];
+    expect(id).toBeTruthy();
+
+    // Forget
+    const { stdout, exitCode } = await runQmd(["memory", "forget", id!], { dbPath: localDbPath });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("Deleted:");
+  });
+
+  test("shows memory stats", async () => {
+    // Store a memory first
+    await runQmd(["memory", "store", "Stats test memory"], { dbPath: localDbPath });
+    const { stdout, exitCode } = await runQmd(["memory", "stats"], { dbPath: localDbPath });
     expect(exitCode).toBe(0);
     expect(stdout).toContain("Total:");
   });

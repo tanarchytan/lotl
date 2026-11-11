@@ -634,6 +634,11 @@ function getDocument(filename: string, fromLine?: number, maxLines?: number, lin
 }
 
 // Multi-get: fetch multiple documents by glob pattern or comma-separated list
+/** handelize() throws on names without a usable filename; fall back to the raw name. */
+function safeHandelize(path: string): string {
+  try { return handelize(path); } catch { return path; }
+}
+
 function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT_MULTI_GET_MAX_BYTES, format: OutputFormat = "cli"): void {
   const db = getDb();
 
@@ -679,6 +684,21 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
           LIMIT 1
         `).get(name) as { virtual_path: string; body_length: number; collection: string; path: string } | null;
 
+        // Try "collection/path" (the form `lotl get` and glob mode accept)
+        const slash = name.indexOf("/");
+        if (!doc && slash > 0) {
+          doc = db.prepare(`
+            SELECT
+              'lotl://' || d.collection || '/' || d.path as virtual_path,
+              LENGTH(content.doc) as body_length,
+              d.collection,
+              d.path
+            FROM documents d
+            JOIN content ON content.hash = d.hash
+            WHERE d.collection = ? AND d.path = ? AND d.active = 1
+          `).get(name.slice(0, slash), safeHandelize(name.slice(slash + 1))) as typeof doc;
+        }
+
         // Try suffix match
         if (!doc) {
           doc = db.prepare(`
@@ -706,6 +726,10 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
       } else {
         console.error(`File not found: ${name}`);
       }
+    }
+    if (files.length === 0) {
+      closeDb();
+      process.exit(1);
     }
   } else {
     // Glob pattern - matchFilesByGlob now returns virtual paths
@@ -1932,30 +1956,6 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
   })), displayQuery, { ...opts, limit: results.length });
 }
 
-// Parse CLI arguments using util.parseArgs
-function parseCLI() {
-  const { values, positionals } = parseArgs({
-    args: process.argv.slice(2), // Skip node and script path
-    options: {
-      // Global options
-      index: {
-        type: "string",
-      },
-      context: {
-        type: "string",
-      },
-      help: { type: "boolean", short: "h" },
-      version: { type: "boolean", short: "v" },
-      skill: { type: "boolean" },
-      global: { type: "boolean" },
-      yes: { type: "boolean" },
-      // Search options
-      n: { type: "string" },
-      "min-score": { type: "string" },
-      all: { type: "boolean" },
-      full: { type: "boolean" },
-      csv: { type: "boolean" },
-      md: { type: "boolean" },
 function exitUsage(msg: string): never {
   console.error(msg);
   process.exit(1);
@@ -1988,6 +1988,30 @@ function parseMemoryLimit(raw: unknown): number {
   return exitUsage(`Invalid --limit "${String(raw)}": expected a positive integer`);
 }
 
+// Parse CLI arguments using util.parseArgs
+function parseCLI() {
+  const { values, positionals } = parseArgs({
+    args: process.argv.slice(2), // Skip node and script path
+    options: {
+      // Global options
+      index: {
+        type: "string",
+      },
+      context: {
+        type: "string",
+      },
+      help: { type: "boolean", short: "h" },
+      version: { type: "boolean", short: "v" },
+      skill: { type: "boolean" },
+      global: { type: "boolean" },
+      yes: { type: "boolean" },
+      // Search options
+      n: { type: "string" },
+      "min-score": { type: "string" },
+      all: { type: "boolean" },
+      full: { type: "boolean" },
+      csv: { type: "boolean" },
+      md: { type: "boolean" },
       xml: { type: "boolean" },
       files: { type: "boolean" },
       json: { type: "boolean" },
@@ -2022,6 +2046,13 @@ function parseMemoryLimit(raw: unknown): number {
       // memory serve options
       host: { type: "string" },
       token: { type: "string" },
+      // memory store/recall options. `n` doubles as the recall limit; `--limit` is the long form.
+      // `vault` has its own --scope parser but gets it from the same positional list, unchanged.
+      scope: { type: "string" },
+      category: { type: "string" },
+      importance: { type: "string" },
+      limit: { type: "string" },
+      "min-relevance": { type: "string" },  // memory/okf recall relevance gate, (0, 1]
       // memory compact options ("force" reused from the embed/skill-install flag above)
       apply: { type: "boolean" },
     },
@@ -2046,13 +2077,6 @@ function parseMemoryLimit(raw: unknown): number {
   // Determine output format
   let format: OutputFormat = "cli";
   if (values.csv) format = "csv";
-      // memory store/recall options. `n` doubles as the recall limit; `--limit` is the long form.
-      // `vault` has its own --scope parser but gets it from the same positional list, unchanged.
-      scope: { type: "string" },
-      category: { type: "string" },
-      importance: { type: "string" },
-      limit: { type: "string" },
-      "min-relevance": { type: "string" },  // memory/okf recall relevance gate, (0, 1]
   else if (values.md) format = "md";
   else if (values.xml) format = "xml";
   else if (values.files) format = "files";

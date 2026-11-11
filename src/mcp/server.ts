@@ -177,6 +177,9 @@ export function buildStaticInstructions(): string {
  * Create an MCP server with all Lotl tools, resources, and prompts registered.
  * Shared by both stdio and HTTP transports.
  */
+/** Databases that already got their startup decay pass in this process. */
+const decayedDbs = new WeakSet<object>();
+
 export async function createMcpServer(storeInput: LotlStore | Promise<LotlStore>): Promise<McpServer> {
   // Lazy-attach gate: the store may still be opening/attaching SQLite when the
   // client completes the `initialize` + `tools/list` handshake. Tool *definitions*
@@ -192,8 +195,14 @@ export async function createMcpServer(storeInput: LotlStore | Promise<LotlStore>
       // Tiers only move when a decay pass runs. The OpenClaw plugin does this
       // on gateway_start; MCP-only users never got one, so every memory stayed
       // `peripheral` and tiered recall degraded to a flat list.
-      try { runDecayPass(s.internal.db); }
-      catch (err) { console.error("startup decay failed:", err); }
+      // Once per database, not once per McpServer: the HTTP transport builds
+      // a server per session, and a full decay pass (a write transaction over
+      // every memory) on each new session cost ~45 ms at 25k memories.
+      if (!decayedDbs.has(s.internal.db)) {
+        decayedDbs.add(s.internal.db);
+        try { runDecayPass(s.internal.db); }
+        catch (err) { console.error("startup decay failed:", err); }
+      }
     },
     (e) => { _err = e; },
   );
@@ -1618,6 +1627,21 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
     return Buffer.concat(chunks).toString();
   }
 
+  // A malformed body is the client's error: answer 400 (JSON-RPC -32700 on
+  // /mcp) instead of letting JSON.parse throw into the generic 500 handler.
+  const PARSE_FAILED = Symbol("parse-failed");
+  function parseJsonOrReply(raw: string, res: ServerResponse, jsonRpc: boolean): any {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(jsonRpc
+        ? { jsonrpc: "2.0", error: { code: -32700, message: "Parse error" }, id: null }
+        : { error: "Invalid JSON body" }));
+      return PARSE_FAILED;
+    }
+  }
+
   const httpServer = createServer(async (nodeReq: IncomingMessage, nodeRes: ServerResponse) => {
     const reqStart = Date.now();
     const pathname = nodeReq.url || "/";
@@ -1635,7 +1659,8 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
       // REST endpoint: POST /query (alias: /search) — structured search without MCP protocol
       if ((pathname === "/query" || pathname === "/search") && nodeReq.method === "POST") {
         const rawBody = await collectBody(nodeReq);
-        const params = JSON.parse(rawBody);
+        const params = parseJsonOrReply(rawBody, nodeRes, false);
+        if (params === PARSE_FAILED) return;
 
         // Validate required fields
         if (!params.searches || !Array.isArray(params.searches)) {
@@ -1689,7 +1714,8 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
 
       if (pathname === "/mcp" && nodeReq.method === "POST") {
         const rawBody = await collectBody(nodeReq);
-        const body = JSON.parse(rawBody);
+        const body = parseJsonOrReply(rawBody, nodeRes, true);
+        if (body === PARSE_FAILED) return;
         const label = describeRequest(body);
         const url = `http://localhost:${port}${pathname}`;
         const headers: Record<string, string> = {};

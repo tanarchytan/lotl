@@ -57,6 +57,15 @@ describe("SqliteConceptSource", () => {
     expect(src.getConcept("memory/global/zzzzzzzz")).toBeNull();
   });
 
+  test("gets a memory whose scope contains a slash (id listed by okf_index resolves)", () => {
+    insertMem("c3d4e5f6cc", "slash scope memory", "fact", "team/backend");
+    const src = new SqliteConceptSource(db);
+    const { refs } = src.listConcepts("memory/team/backend");
+    expect(refs.map(r => r.id)).toEqual(["memory/team/backend/c3d4e5f6"]);
+    expect(src.getConcept(refs[0]!.id)?.body).toBe("slash scope memory");
+    expect(src.getConcept("memory/team/c3d4e5f6")).toBeNull();
+  });
+
   test("lists doc groups + refs and gets a doc concept", () => {
     insertDoc("notes", "sub/readme.md", "Read Me", "# Read Me\nbody text");
     const src = new SqliteConceptSource(db);

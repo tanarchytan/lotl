@@ -154,8 +154,14 @@ export class SqliteConceptSource implements ConceptSource {
 
   /** Raw memory row by concept id (0 = not found; >1 shouldn't happen with 8-char ids -> treated as not found). */
   getMemoryRow(id: string): MemRow | null {
-    const { group, rest } = parseConceptId(id);
-    const scope = group.slice("memory/".length);
+    if (conceptKind(id) !== "memory") return null;
+    // The scope may itself contain "/" ("team/backend"); the 8-char id prefix
+    // never does, so split on the last slash. parseConceptId splits on the
+    // first one, which turned "memory/team/backend/ab12cd34" into scope
+    // "team" and missed the row that okf_index had just listed.
+    const cut = id.lastIndexOf("/");
+    const scope = id.slice("memory/".length, cut);
+    const rest = id.slice(cut + 1);
     const rows = this.db.prepare(
       `SELECT id, text, category, scope, metadata, last_accessed, created_at FROM memories WHERE scope=? AND substr(id,1,8)=?`
     ).all(scope, rest) as MemRow[];

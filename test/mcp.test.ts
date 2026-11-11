@@ -962,6 +962,20 @@ describe("MCP HTTP Transport", () => {
     expect(res.status).toBe(404);
   });
 
+  test("malformed JSON body gets 400 with a JSON-RPC parse error, not 500", async () => {
+    const res = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json, text/event-stream" },
+      body: "{not json",
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error.code).toBe(-32700);
+    const rest = await fetch(`${baseUrl}/query`, { method: "POST", body: "{not json" });
+    expect(rest.status).toBe(400);
+    // still serving
+    expect((await fetch(`${baseUrl}/health`)).status).toBe(200);
+  });
+
   // ---------------------------------------------------------------------------
   // MCP protocol over HTTP
   // ---------------------------------------------------------------------------
