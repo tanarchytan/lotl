@@ -251,8 +251,10 @@ timeout = 30
 ```
 macOS/Linux: drop the `bash` wrapper, point `command` at the script directly.
 Tunables: `LOTL_BIN` (default `lotl`; Windows `lotl.cmd`), `LOTL_SAVE_INTERVAL`
-(15), `LOTL_RECALL_TIMEOUT`, `LOTL_RECALL_MAX_LINES`. Recall does a fast FTS
-lookup (`LOTL_ONNX=off`) so no model loads per prompt. Hooks load at session start.
+(15), `LOTL_RECALL_TIMEOUT`, `LOTL_RECALL_MAX_LINES`, `LOTL_RECALL_MIN_RELEVANCE`
+(0.6; `off` disables the gate). Recall does a fast FTS lookup (no model loads per
+prompt) with `--min-relevance`, so prompts that share no specific terms with any
+memory inject nothing. Hooks load at session start.
 
 **OpenCode** uses a TS plugin instead of command hooks. Copy
 `hooks/opencode-lotl-memory.mjs` to `~/.config/opencode/plugins/` (global) or
@@ -382,11 +384,11 @@ lotl search "keywords"             # BM25 only (no LLM)
 lotl get "#abc123"                 # By docid
 lotl multi-get "journals/2026-*.md" -l 40  # Batch by glob
 lotl memory store "I prefer TypeScript"    # Store (auto-classify)
-lotl memory recall "what language"         # Search memories
-lotl memory extract "conversation text"    # Extract from conversation
 lotl memory store "x" --scope proj --category fact --importance 0.8  # Explicit scope/category/importance
-lotl memory stats                          # Stats by tier/category
+lotl memory recall "what language"         # Search memories
 lotl memory recall "x" --scope proj --limit 5  # Scoped, capped
+lotl memory extract "conversation text"    # Extract from conversation
+lotl memory stats                          # Stats by tier/category
 lotl memory decay                          # Run decay pass
 lotl memory import conversations.json      # Import conversations
 lotl memory export memories.json           # Export all memories
