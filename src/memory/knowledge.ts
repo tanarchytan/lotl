@@ -81,8 +81,11 @@ const inForceAt = (r: TimelineRow, t: number): boolean =>
  *  - is a no-op returning the existing id when the fact in force at t already
  *    has this object, and extends the next fact back to t when that one has
  *    this object, instead of adding a second copy.
- * Scope does not separate timelines (unchanged): a store in any scope ends
- * the fact in force for the same subject+predicate.
+ * The timeline is per scope (default "global"): the in-force lookup, closing
+ * the previous fact, the next-later lookup and the same-object shortcut only
+ * see rows of the fact's own scope, so a store in one scope never ends,
+ * bounds or is absorbed by another scope's facts. Rows stored before this
+ * were not migrated; they keep their scope and are just not seen across it.
  */
 export function knowledgeStore(
   db: Database,
@@ -99,8 +102,8 @@ export function knowledgeStore(
   return db.transaction(() => {
     const timeline = db.prepare(`
       SELECT id, object, valid_from, valid_until, created_at FROM knowledge
-      WHERE subject = ? AND predicate = ?
-    `).all(subject, predicate) as TimelineRow[];
+      WHERE subject = ? AND predicate = ? AND scope = ?
+    `).all(subject, predicate, scope) as TimelineRow[];
 
     let current: TimelineRow | null = null;
     let next: TimelineRow | null = null;

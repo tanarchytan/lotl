@@ -1253,6 +1253,73 @@ describe("CLI Memory Commands", () => {
     },
   );
 
+  describe("memory embed --missing and import errors", () => {
+    // No embedder in any of these runs: nothing loads or downloads a model.
+    const noEmbedder = { LOTL_EMBED_PROVIDER: "local", LOTL_EMBED_API_KEY: "", LOTL_EMBED_BACKEND: "", LOTL_ONNX: "off" };
+    const run = (args: string[]) => runQmd(args, { dbPath: localDbPath, env: noEmbedder });
+
+    test("without --missing prints usage and exits 1", async () => {
+      await run(["memory", "store", "embed usage probe"]);
+      const { stdout, stderr, exitCode } = await run(["memory", "embed"]);
+      expect(exitCode).toBe(1);
+      expect(stderr).toContain("Usage: lotl memory embed --missing [--dry-run] [--scope S]");
+      expect(stdout).toBe("");
+    });
+
+    test("--dry-run prints the count and embedder, writes nothing", async () => {
+      await run(["memory", "store", "embed dry probe one", "--scope", "ea"]);
+      await run(["memory", "store", "embed dry probe two", "--scope", "eb"]);
+      const all = await run(["memory", "embed", "--missing", "--dry-run"]);
+      expect(all.exitCode).toBe(0);
+      expect(all.stdout.split("\n").filter(Boolean)).toEqual([
+        "Missing vectors: 2",
+        "Embedder: none (no provider configured)",
+        "Dry run, nothing was written.",
+      ]);
+      const scoped = await run(["memory", "embed", "--missing", "--dry-run", "--scope", "ea"]);
+      expect(scoped.stdout).toContain("Missing vectors: 1");
+      const again = await run(["memory", "embed", "--missing", "--dry-run"]);
+      expect(again.stdout).toContain("Missing vectors: 2");
+    });
+
+    test("a real run with no provider prints the counts, the reason on stderr, and exits 1", async () => {
+      await run(["memory", "store", "embed real probe one"]);
+      await run(["memory", "store", "embed real probe two"]);
+      const { stdout, stderr, exitCode } = await run(["memory", "embed", "--missing"]);
+      expect(exitCode).toBe(1);
+      expect(stdout.split("\n").filter(Boolean)).toEqual(["Missing: 2", "Embedded: 0", "Failed: 0"]);
+      expect(stderr).toContain("Aborted: no embedding provider configured");
+    });
+
+    test("a real run with nothing missing exits 0", async () => {
+      const { stdout, exitCode } = await run(["memory", "embed", "--missing"]);
+      expect(exitCode).toBe(0);
+      expect(stdout.split("\n").filter(Boolean)).toEqual(["Missing: 0", "Embedded: 0", "Failed: 0"]);
+    });
+
+    test("the memory usage line lists embed", async () => {
+      const { stderr, exitCode } = await run(["memory", "nosuchcommand"]);
+      expect(exitCode).toBe(1);
+      expect(stderr).toMatch(/Usage: lotl memory <[^>]*\bembed\b[^>]*>/);
+    });
+
+    test("import prints the errors count only when it is not zero", async () => {
+      const file = join(testDir, `import-errors-${testCounter}.json`);
+      await writeFile(file, JSON.stringify([
+        { text: "import probe kept note", category: "fact", scope: "global", importance: 0.5 },
+        { text: "   ", category: "fact", scope: "global", importance: 0.5 },
+      ]));
+      const bad = await run(["memory", "import", file]);
+      expect(bad.exitCode).toBe(0);
+      expect(bad.stdout.trim()).toBe("Imported 1 memories, 0 duplicates, 1 errors");
+
+      const clean = join(testDir, `import-clean-${testCounter}.json`);
+      await writeFile(clean, JSON.stringify([{ text: "import probe clean note", category: "fact", scope: "global", importance: 0.5 }]));
+      const ok = await run(["memory", "import", clean]);
+      expect(ok.stdout.trim()).toBe("Imported 1 memories, 0 duplicates");
+    });
+  });
+
   test("forgets a memory", async () => {
     // Store first
     const { stdout: storeOut } = await runQmd(["memory", "store", "Temporary memory to delete"], { dbPath: localDbPath });

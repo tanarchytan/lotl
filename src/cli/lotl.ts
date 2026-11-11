@@ -112,7 +112,7 @@ import {
 } from "../collections.js";
 import { getEmbeddedQmdSkillContent, getEmbeddedQmdSkillFiles } from "../embedded-skills.js";
 import { getRemoteConfig } from "../remote-config.js";
-import { MEMORY_CATEGORIES, type MemoryCategory, memoryStore, memoryRecall, memoryForget, memoryStats, memoryVerify, extractAndStore, runDecayPass, importConversation, exportMemories, importMemories, runCleanupPass, runReflectionPass } from "../memory/index.js";
+import { MEMORY_CATEGORIES, type MemoryCategory, memoryStore, memoryRecall, memoryForget, memoryStats, memoryVerify, extractAndStore, runDecayPass, importConversation, exportMemories, importMemories, runCleanupPass, runReflectionPass, memoryEmbedMissing } from "../memory/index.js";
 
 // Enable production mode - allows using default database path
 // Tests must set INDEX_PATH or use createStore() with explicit path
@@ -2125,6 +2125,8 @@ function parseCLI() {
       "min-relevance": { type: "string" },  // memory/okf recall relevance gate, (0, 1]
       // memory compact options ("force" reused from the embed/skill-install flag above)
       apply: { type: "boolean" },
+      missing: { type: "boolean" },  // memory embed: only memories without a vector
+      "dry-run": { type: "boolean" },  // memory embed: count only, write nothing
       "list-ids": { type: "boolean" },  // memory compact: print every review id, one per line
     },
     allowPositionals: true,
@@ -2795,7 +2797,7 @@ if (isMain) {
             const parsed = JSON.parse(content);
             if (Array.isArray(parsed) && parsed[0]?.text && parsed[0]?.category) {
               const result = await importMemories(db, filePath);
-              console.log(`Imported ${result.imported} memories, ${result.duplicates} duplicates`);
+              console.log(`Imported ${result.imported} memories, ${result.duplicates} duplicates${result.errors > 0 ? `, ${result.errors} errors` : ""}`);
             } else {
               const result = await importConversation(db, filePath, cli.args[2]);
               console.log(`Parsed ${result.messages} messages, stored ${result.memoriesStored} memories, ${result.duplicates} duplicates`);
@@ -2856,8 +2858,30 @@ if (isMain) {
         say(`Scanned ${r.scanned} over-budget memories; ${apply ? `compacted ${r.compacted}` : `would compact ${r.scanned - r.review.length}`}.`);
         for (const line of formatCompactReview(r.review, listIds)) console.log(line);
         if (!apply) say("Dry-run. Re-run with --apply to write (originals archived in metadata.original).");
+      } else if (subCmd === "embed") {
+        if (cli.values.missing !== true) {
+          console.error("Usage: lotl memory embed --missing [--dry-run] [--scope S]");
+          process.exit(1);
+        }
+        const dryRun = cli.values["dry-run"] === true;
+        const scope = typeof cli.values.scope === "string" ? cli.values.scope : undefined;
+        const r = await memoryEmbedMissing(db, { dryRun, scope });
+        if (dryRun) {
+          const embedder = r.provider === "none" ? "none (no provider configured)" : r.provider;
+          console.log(`Missing vectors: ${r.missing}`);
+          console.log(`Embedder: ${embedder}`);
+          console.log("Dry run, nothing was written.");
+        } else {
+          console.log(`Missing: ${r.missing}`);
+          console.log(`Embedded: ${r.embedded}`);
+          console.log(`Failed: ${r.failed}`);
+          if (r.aborted) {
+            console.error(`Aborted: ${r.aborted}`);
+            process.exit(1);
+          }
+        }
       } else {
-        console.error("Usage: lotl memory <store|recall|forget|extract|stats|decay|import|export|serve|compact> [args]");
+        console.error("Usage: lotl memory <store|recall|forget|extract|stats|decay|import|export|serve|compact|embed> [args]");
         process.exit(1);
       }
       closeDb();

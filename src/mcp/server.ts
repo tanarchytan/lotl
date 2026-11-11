@@ -751,8 +751,16 @@ Intent-aware lex (C++ performance, not sports):
       const results = await memoryStoreBatch(db, items);
       const created = results.filter(r => r.status === "created").length;
       const dupes = results.filter(r => r.status === "duplicate").length;
+      const errorCount = results.filter(r => r.status === "error").length;
+      const firstErrorAt = results.findIndex(r => r.status === "error");
+      let summary = `Batched ${results.length} memories: ${created} created, ${dupes} duplicate`;
+      if (errorCount > 0) {
+        summary += `, ${errorCount} ${errorCount === 1 ? "error" : "errors"}. First error (item ${firstErrorAt}): ${results[firstErrorAt]!.error ?? "unknown error"}`;
+      } else {
+        summary += ".";
+      }
       return {
-        content: [{ type: "text", text: `Batched ${results.length} memories: ${created} created, ${dupes} duplicate.` }],
+        content: [{ type: "text", text: summary }],
         structuredContent: { results },
       };
     }

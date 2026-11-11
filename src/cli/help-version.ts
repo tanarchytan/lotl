@@ -39,6 +39,9 @@ export function showHelp(): void {
   console.log("  lotl memory compact [--apply] [--force] [--list-ids]");
   console.log("                                 - Shorten over-budget memories (dry run unless --apply). Low-confidence ids are");
   console.log("                                   counted and sampled; --list-ids prints all of them, one per line.");
+  console.log("  lotl memory embed --missing [--dry-run] [--scope S]");
+  console.log("                                 - Embed memories that have no vector (stored without an embedder).");
+  console.log("                                   --dry-run counts them and names the embedder, writes nothing.");
   console.log("");
   console.log("Collections & context:");
   console.log("  lotl collection add/list/remove/rename/show   - Manage indexed folders");

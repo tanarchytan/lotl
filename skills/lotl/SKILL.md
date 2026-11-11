@@ -411,6 +411,7 @@ lotl memory stats                          # Stats by tier/category
 lotl memory decay                          # Run decay pass
 lotl memory import conversations.json      # Import conversations
 lotl memory export memories.json           # Export all memories
+lotl memory embed --missing --dry-run      # Count memories without a vector (add --scope S; drop --dry-run to embed)
 ```
 
 ## Setup

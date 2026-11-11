@@ -2261,12 +2261,38 @@ export function memoryForget(
   return { deleted: true };
 }
 
+/** Redact <private> spans in the string fields of caller metadata that carry
+ *  note text. An `original` that is empty afterwards is dropped (no original
+ *  is better than an empty one, which would make the row hash empty text). */
+function redactMetadata(metadata: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...metadata };
+  if (typeof out.original === "string") {
+    const original = redactPrivate(out.original).trim();
+    if (original) out.original = original; else delete out.original;
+  }
+  if (typeof out.description === "string") out.description = redactPrivate(out.description).trim();
+  return out;
+}
+
 export async function memoryUpdate(
   db: Database,
   options: MemoryUpdateOptions
 ): Promise<{ updated: boolean }> {
   const mem = db.prepare(`SELECT * FROM memories WHERE id = ?`).get(options.id) as Memory | null;
   if (!mem) return { updated: false };
+
+  // Redact <private>...</private> spans FIRST, as memoryStore does, before
+  // the budget block, hashing, embedding or any write: nothing below may see
+  // private text. Text that is empty after redaction is an error and nothing
+  // is written. Caller metadata gets the same treatment for `original` (the
+  // full text, which also feeds the hash) and `description` (a summary of it);
+  // other free-form metadata keys are not touched, as in memoryStore.
+  let requestedText: string | undefined;
+  if (options.text !== undefined) {
+    requestedText = redactPrivate(options.text).trim();
+    if (!requestedText) throw new Error("Memory text is empty after redacting <private> content");
+  }
+  const requestedMetadata = options.metadata !== undefined ? redactMetadata(options.metadata) : undefined;
 
   const now = Date.now();
   const changes: string[] = [];
@@ -2281,11 +2307,11 @@ export async function memoryUpdate(
   // on it as in memoryStore, and the old compaction state (original,
   // description, draft) is replaced, so the full text stays recoverable and
   // the hash is of the text that is now true.
-  if (options.text !== undefined && options.text !== mem.text) {
-    let newText = options.text.trim();
-    let newMetadata: Record<string, unknown> | string | null = options.metadata !== undefined ? options.metadata : mem.metadata;
+  if (requestedText !== undefined && requestedText !== mem.text) {
+    let newText = requestedText;
+    let newMetadata: Record<string, unknown> | string | null = requestedMetadata !== undefined ? requestedMetadata : mem.metadata;
     let writeMetadata = false;
-    if (options.metadata === undefined) {
+    if (requestedMetadata === undefined) {
       const oldMeta = parseMetadataObject(mem.metadata);
       const budgeted = await applyWriteBudget(newText, withoutCompactionState(oldMeta));
       newText = budgeted.text;
@@ -2320,11 +2346,11 @@ export async function memoryUpdate(
     changes.push("category");
   }
 
-  if (options.metadata !== undefined) {
-    db.prepare(`UPDATE memories SET metadata = ? WHERE id = ?`).run(JSON.stringify(options.metadata), options.id);
+  if (requestedMetadata !== undefined) {
+    db.prepare(`UPDATE memories SET metadata = ? WHERE id = ?`).run(JSON.stringify(requestedMetadata), options.id);
     // A metadata-only change can add or drop metadata.original.
     if (!changes.includes("text")) {
-      const newHash = memoryRowHash(mem.text, options.metadata);
+      const newHash = memoryRowHash(mem.text, requestedMetadata);
       if (newHash !== mem.content_hash) db.prepare(`UPDATE memories SET content_hash = ? WHERE id = ?`).run(newHash, options.id);
     }
     changes.push("metadata");
