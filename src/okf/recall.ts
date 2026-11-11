@@ -13,12 +13,19 @@ function firstLine(text: string): string {
   return l.length > DESC_MAX ? l.slice(0, DESC_MAX - 1) + "…" : l;
 }
 
-export async function okfRecall(store: StoreLike, query: string, opts: { limit?: number; maxBytes?: number } = {}): Promise<ConceptRef[]> {
+/**
+ * `minRelevance` (optional) applies the memory relevance gate (see
+ * memory/relevance.ts) to the memory rows only; document refs from
+ * `searchFTS` are not gated. Omit it for unchanged behaviour.
+ */
+export async function okfRecall(store: StoreLike, query: string, opts: { limit?: number; maxBytes?: number; minRelevance?: number } = {}): Promise<ConceptRef[]> {
   const limit = opts.limit ?? 8;
   const maxBytes = opts.maxBytes ?? 2000;
   const refs: ConceptRef[] = [];
 
-  const mem = await memoryRecall(store.db, { query, limit, rerank: false });
+  const mem = await memoryRecall(store.db, opts.minRelevance === undefined
+    ? { query, limit, rerank: false }
+    : { query, limit, rerank: false, minRelevance: opts.minRelevance });
   for (const m of mem) {
     refs.push({ id: buildMemoryId(m.scope, m.id), type: capitalize(m.category), title: firstLine(m.text).slice(0, 60), description: firstLine(m.text) });
   }

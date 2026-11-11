@@ -77,6 +77,30 @@ export const MEMORY_RRF_W_TIME = 0.1;
 // production memory recall latency targets.
 export const MEMORY_RERANK_BLEND_ORIGINAL = 0.5;
 export const MEMORY_RERANK_BLEND_RERANK = 0.5;
+// Opt-in relevance gate (memoryRecall `minRelevance`, CLI --min-relevance),
+// measured 2026-11-10 on 91 labelled prompts against the real memory index
+// (devnotes/metrics/recall-relevance-gate-2026-11-10.md). Inactive unless a caller
+// passes minRelevance. Suggested threshold: 0.6 (the hook default).
+//   MIN_TERMS:   prompts with fewer informative terms return nothing.
+//   MIN_MATCHES: a memory must contain min(this, #terms) distinct terms.
+// Env overrides are for sweeps only.
+export const MEMORY_RELEVANCE_MIN_TERMS = Number(process.env.LOTL_MEMORY_RELEVANCE_MIN_TERMS ?? 2);
+export const MEMORY_RELEVANCE_MIN_MATCHES = Number(process.env.LOTL_MEMORY_RELEVANCE_MIN_MATCHES ?? 3);
+// Specificity floor, added 2026-11-11 for short prompts of common words ("claude code
+// rebooted") whose two informative terms co-occur in many memories by chance
+// (devnotes/metrics/recall-relevance-gate-2026-11-10.md, follow-up section). A memory
+// also needs Σ idf(matched terms) ≥ ln(N) + MIN_SPECIFICITY, i.e. roughly fewer than
+// e^-1 memories would hold that word combination by chance. Corpus-relative, no word list.
+//   MIN_SPECIFICITY: nats above ln(N). Plateau 1.0 to 1.5 on the labelled sets.
+//   PHRASE_CREDIT:   for two-term prompts, a memory holding both terms side by side,
+//                    when no other memory does, gets the floor lowered by this much
+//                    ("restart Claude" answers "claude restarted"). Plateau 2.5 to 3.0.
+//   MIN_CORPUS:      below this many memories the floor is skipped: chance co-occurrence
+//                    is rare there and the floor cost 2 to 9 points of recall on
+//                    sub-sampled corpora of 5 to 50 memories, none at 100+.
+export const MEMORY_RELEVANCE_MIN_SPECIFICITY = Number(process.env.LOTL_MEMORY_RELEVANCE_MIN_SPECIFICITY ?? 1.0);
+export const MEMORY_RELEVANCE_PHRASE_CREDIT = Number(process.env.LOTL_MEMORY_RELEVANCE_PHRASE_CREDIT ?? 2.5);
+export const MEMORY_RELEVANCE_MIN_CORPUS = Number(process.env.LOTL_MEMORY_RELEVANCE_MIN_CORPUS ?? 100);
 
 /** Weight for intent terms relative to query terms (1.0) in snippet scoring */
 export const INTENT_WEIGHT_SNIPPET = 0.3;

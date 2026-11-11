@@ -25,7 +25,9 @@ import {
   MEMORY_RRF_K, MEMORY_RRF_W_BM25, MEMORY_RRF_W_VEC, MEMORY_RRF_W_TIME,
 } from "../store/constants.js";
 
+  MEMORY_RELEVANCE_MIN_TERMS,
 // =============================================================================
+import { assertMinRelevance, filterByRelevance, informativeTerms } from "./relevance.js";
 // Embedding LRU cache — avoids redundant API calls for repeated text
 // From Mastra: keyed by content hash, 100 entry max
 // =============================================================================
@@ -182,6 +184,15 @@ export type MemoryRecallOptions = {
   rerank?: boolean;
 };
 
+  /**
+   * Opt-in absolute relevance gate in (0, 1]. When set, a memory is kept
+   * only if its text covers at least this IDF-weighted share of the
+   * prompt's informative terms (see memory/relevance.ts), and prompts with
+   * too few informative terms return []. Filters the candidate pool before
+   * the limit is applied and keeps the ungated order. Undefined (default)
+   * leaves recall unchanged. Suggested value: 0.6.
+   */
+  minRelevance?: number;
 export type MemoryRecallResult = {
   id: string;
   text: string;
@@ -1209,6 +1220,14 @@ export async function memoryRecall(
     for (const e of expandEntities.slice(0, 2)) {
       const sub = expandKeywords ? `${expandKeywords} ${e}` : e;
       if (sub !== query && !subQueries.includes(sub)) subQueries.push(sub);
+  // Opt-in relevance gate: decided before any retrieval work so a prompt
+  // with too few informative terms costs nothing.
+  let gateTerms: string[] | null = null;
+  if (options.minRelevance !== undefined) {
+    assertMinRelevance(options.minRelevance);
+    gateTerms = informativeTerms(query);
+    if (gateTerms.length < MEMORY_RELEVANCE_MIN_TERMS) return [];
+  }
     }
   } else if (EXPAND_MODE === "keywords") {
     // Split the top keywords into N groups and build a sub-query per group.
@@ -1748,6 +1767,12 @@ export async function memoryRecall(
  * Cost: one extra chatComplete call per question. Cache-friendly if
  * LOTL_LLM_CACHE_PATH is set.
  */
+  // 5b3. Opt-in relevance gate: drop candidates whose text does not cover
+  // enough of the prompt, before the limit cut so deeper hits can surface.
+  if (gateTerms) {
+    sorted = filterByRelevance(db, gateTerms, sorted, options.minRelevance!);
+  }
+
 export async function memoryReflect(
   question: string,
   memories: Array<{ text: string }>,
