@@ -25,9 +25,13 @@ afterEach(async () => {
   await rm(tmp, { recursive: true, force: true });
 });
 
+// The CLI opens (and initializes) the index on startup. Without INDEX_PATH
+// it used the developer's real ~/.cache/lotl/index.sqlite, so every test run
+// touched it (and ran any pending schema migration on it).
 const childEnv = (extra: Record<string, string> = {}) => ({
   ...process.env,
   LOTL_VAULT_PATH: vaultPath,
+  INDEX_PATH: join(tmp, "index.sqlite"),
   ...extra,
 });
 
