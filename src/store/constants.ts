@@ -225,3 +225,13 @@ export const MEMORY_SYNONYMS: Record<string, string[]> = {
 // and then gets "unknown session" has to re-initialize, and not all do.
 export const MCP_HTTP_SESSION_IDLE_MS = 4 * 60 * 60 * 1000;
 export const MCP_HTTP_MAX_SESSIONS = 64;
+
+// Input caps on MCP write tools (characters, not bytes). They stop accidental
+// megabyte writes from an agent; the CLI and SDK paths are not capped.
+export const MCP_MAX_MEMORY_TEXT_CHARS = 64 * 1024;
+export const MCP_MAX_BATCH_ITEMS = 1000;
+export const MCP_MAX_KNOWLEDGE_FIELD_CHARS = 1024;
+export const MCP_MAX_EXTRACT_TEXT_CHARS = 256 * 1024;
+export const MCP_MAX_METADATA_CHARS = 64 * 1024; // JSON.stringify length
+export const MCP_MAX_SCOPE_CHARS = 256;
+export const MCP_MAX_SCOPES = 1000;

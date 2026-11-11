@@ -23,7 +23,11 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { existsSync } from "fs";
 import { rejectForbiddenRequest } from "../http-guard.js";
-import { MCP_HTTP_SESSION_IDLE_MS, MCP_HTTP_MAX_SESSIONS } from "../store/constants.js";
+import {
+  MCP_HTTP_SESSION_IDLE_MS, MCP_HTTP_MAX_SESSIONS,
+  MCP_MAX_MEMORY_TEXT_CHARS, MCP_MAX_BATCH_ITEMS, MCP_MAX_KNOWLEDGE_FIELD_CHARS,
+  MCP_MAX_EXTRACT_TEXT_CHARS, MCP_MAX_METADATA_CHARS, MCP_MAX_SCOPE_CHARS, MCP_MAX_SCOPES,
+} from "../store/constants.js";
 import {
   createStore,
   extractSnippet,
@@ -181,6 +185,29 @@ export function buildStaticInstructions(): string {
  */
 /** Databases that already got their startup decay pass in this process. */
 const decayedDbs = new WeakSet<object>();
+
+/** Tool error for an over-limit input: names the tool, field, size and limit. Writes nothing. */
+function capError(tool: string, field: string, size: number, limit: number, unit = "characters") {
+  return {
+    content: [{ type: "text" as const, text: `${tool}: ${field} is ${size} ${unit}, limit is ${limit}. Nothing was stored.` }],
+    isError: true as const,
+  };
+}
+
+/** First over-limit entry of `checks` ([field, size, limit]) as a tool error, else undefined. */
+function firstOverCap(tool: string, checks: Array<[string, number, number, string?]>) {
+  for (const [field, size, limit, unit] of checks) {
+    if (size > limit) return capError(tool, field, size, limit, unit);
+  }
+  return undefined;
+}
+
+const metadataSize = (m: unknown): number => {
+  if (m === undefined) return 0;
+  try { return JSON.stringify(m)?.length ?? 0; } catch { return Infinity; }
+};
+const turnsSize = (turns?: Array<{ role: string; content: string }>): number =>
+  (turns ?? []).reduce((n, t) => n + t.role.length + t.content.length, 0);
 
 export async function createMcpServer(storeInput: LotlStore | Promise<LotlStore>): Promise<McpServer> {
   // Lazy-attach gate: the store may still be opening/attaching SQLite when the
@@ -670,6 +697,12 @@ Intent-aware lex (C++ performance, not sports):
       },
     },
     async ({ text, category, scope, importance, metadata }) => {
+      const over = firstOverCap("memory_add", [
+        ["text", text.length, MCP_MAX_MEMORY_TEXT_CHARS],
+        ["scope", scope?.length ?? 0, MCP_MAX_SCOPE_CHARS],
+        ["metadata", metadataSize(metadata), MCP_MAX_METADATA_CHARS],
+      ]);
+      if (over) return over;
       const store = await ready();
       const db = store.internal.db;
       const result = await memoryStore(db, { text, category, scope, importance, metadata, actor: "agent:mcp" });
@@ -701,6 +734,18 @@ Intent-aware lex (C++ performance, not sports):
       },
     },
     async ({ items }) => {
+      const tooMany = firstOverCap("memory_add_batch", [["items", items.length, MCP_MAX_BATCH_ITEMS, "items"]]);
+      if (tooMany) return tooMany;
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i]!;
+        const over = firstOverCap("memory_add_batch", [
+          [`items[${i}].text`, it.text?.length ?? 0, MCP_MAX_MEMORY_TEXT_CHARS],
+          [`items[${i}].turns`, turnsSize(it.turns), MCP_MAX_MEMORY_TEXT_CHARS],
+          [`items[${i}].scope`, it.scope?.length ?? 0, MCP_MAX_SCOPE_CHARS],
+          [`items[${i}].metadata`, metadataSize(it.metadata), MCP_MAX_METADATA_CHARS],
+        ]);
+        if (over) return over;
+      }
       const store = await ready();
       const db = store.internal.db;
       const results = await memoryStoreBatch(db, items);
@@ -725,6 +770,11 @@ Intent-aware lex (C++ performance, not sports):
       },
     },
     async ({ scopes, dimensions }) => {
+      const over = firstOverCap("memory_register_scopes", [
+        ["scopes", scopes.length, MCP_MAX_SCOPES, "entries"],
+        ...scopes.map((sc, i): [string, number, number] => [`scopes[${i}]`, sc.length, MCP_MAX_SCOPE_CHARS]),
+      ]);
+      if (over) return over;
       const store = await ready();
       const db = store.internal.db;
       ensureScopePartitions(db, dimensions, scopes);
@@ -809,6 +859,11 @@ Intent-aware lex (C++ performance, not sports):
       },
     },
     async ({ id, text, importance, category, metadata }) => {
+      const over = firstOverCap("memory_update", [
+        ["text", text?.length ?? 0, MCP_MAX_MEMORY_TEXT_CHARS],
+        ["metadata", metadataSize(metadata), MCP_MAX_METADATA_CHARS],
+      ]);
+      if (over) return over;
       const store = await ready();
       const db = store.internal.db;
       const result = await memoryUpdate(db, { id, text, importance, category, metadata });
@@ -923,6 +978,11 @@ Intent-aware lex (C++ performance, not sports):
       },
     },
     async ({ text, scope }) => {
+      const over = firstOverCap("memory_extract", [
+        ["text", text.length, MCP_MAX_EXTRACT_TEXT_CHARS],
+        ["scope", scope?.length ?? 0, MCP_MAX_SCOPE_CHARS],
+      ]);
+      if (over) return over;
       const store = await ready();
       const db = store.internal.db;
       const result = await extractAndStore(db, text, scope);
@@ -1179,6 +1239,12 @@ Intent-aware lex (C++ performance, not sports):
       },
     },
     async ({ subject, predicate, object, valid_from, confidence }) => {
+      const over = firstOverCap("knowledge_add", [
+        ["subject", subject.length, MCP_MAX_KNOWLEDGE_FIELD_CHARS],
+        ["predicate", predicate.length, MCP_MAX_KNOWLEDGE_FIELD_CHARS],
+        ["object", object.length, MCP_MAX_KNOWLEDGE_FIELD_CHARS],
+      ]);
+      if (over) return over;
       const store = await ready();
       const db = store.internal.db;
       const result = knowledgeStore(db, { subject, predicate, object, valid_from, confidence });
@@ -1642,7 +1708,12 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
   }, Math.min(Math.max(Math.floor(idleMs / 4), 50), 60_000));
   sweepTimer.unref();
 
-  async function createSession(): Promise<Session> {
+  /**
+   * The creating initialize POST has no session id yet, so acquire() cannot
+   * count it. The new session starts with inFlight 1 for that request and
+   * releases it when the response closes.
+   */
+  async function createSession(res: ServerResponse): Promise<Session> {
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       enableJsonResponse: true,
@@ -1660,7 +1731,11 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
       await server.close().catch(() => {});
       throw err;
     }
-    const session: Session = { transport, server, lastSeen: Date.now(), inFlight: 0 };
+    const session: Session = { transport, server, lastSeen: Date.now(), inFlight: 1 };
+    res.once("close", () => {
+      session.inFlight--;
+      session.lastSeen = Date.now();
+    });
 
     // Keep the handler connect() installed; just also forget the session.
     const protocolOnClose = transport.onclose;
@@ -1836,7 +1911,7 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
           }
           transport = existing.transport;
         } else if (isInitializeRequest(body)) {
-          fresh = await createSession();
+          fresh = await createSession(nodeRes);
           transport = fresh.transport;
         } else {
           nodeRes.writeHead(400, { "Content-Type": "application/json" });

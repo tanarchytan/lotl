@@ -13,12 +13,27 @@ import { join } from "node:path";
 import { openDatabase } from "../src/db.js";
 import { initializeDatabase } from "../src/store/db-init.js";
 import { startMemoryServer } from "../src/memory/server.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { startMcpHttpServer, type HttpServerHandle } from "../src/mcp/server.js";
 
 type Res = { status: number; headers: Record<string, any>; body: string };
 
+/**
+ * Address each test server actually bound, by port. `localhost` may resolve to
+ * ::1 first (GitHub runners), so raw connections must go where the server
+ * listens, not to a hardcoded 127.0.0.1. The Host header stays test-controlled.
+ */
+const boundAddr = new Map<number, string>();
+function bound(server: Server): number {
+  const a = server.address() as AddressInfo;
+  boundAddr.set(a.port, a.address);
+  return a.port;
+}
+const connectAddr = (port: number) => boundAddr.get(port) ?? "127.0.0.1";
+
 /** Raw request so Host and Origin can be forged (fetch forbids setting Host). */
-function raw(port: number, method: string, path: string, headers: Record<string, string>, body?: string, connectHost = "127.0.0.1"): Promise<Res> {
+function raw(port: number, method: string, path: string, headers: Record<string, string>, body?: string, connectHost = connectAddr(port)): Promise<Res> {
   return new Promise((resolve, reject) => {
     const req = request({ host: connectHost, port, method, path, headers }, (res) => {
       const chunks: Buffer[] = [];
@@ -52,7 +67,7 @@ function rawHeld(port: number, path: string, headers: Record<string, string>, bo
   let resolveRes!: (r: Res) => void;
   let rejectRes!: (e: Error) => void;
   const done = new Promise<Res>((res, rej) => { resolveRes = res; rejectRes = rej; });
-  const req = request({ host: "127.0.0.1", port, method: "POST", path,
+  const req = request({ host: connectAddr(port), port, method: "POST", path,
     headers: { ...headers, "content-length": String(Buffer.byteLength(body)) } }, (res) => {
     const chunks: Buffer[] = [];
     res.on("data", (c) => chunks.push(c));
@@ -83,6 +98,7 @@ describe("MCP HTTP: Host/Origin guard", () => {
     setEnv("LOTL_CONFIG_DIR", join(dir, "cfg"));
     setEnv("LOTL_RECALL_NO_TOUCH", "on");
     handle = await startMcpHttpServer(0, { quiet: true });
+    bound(handle.httpServer);
   });
   afterAll(async () => {
     await handle.stop();
@@ -157,6 +173,7 @@ describe("MCP HTTP: session cleanup", () => {
     setEnv("LOTL_CONFIG_DIR", join(dir, "cfg"));
     setEnv("LOTL_RECALL_NO_TOUCH", "on");
     handle = await startMcpHttpServer(0, { quiet: true });
+    bound(handle.httpServer);
     return handle;
   };
   afterEach(async () => {
@@ -278,11 +295,116 @@ describe("MCP HTTP: session cleanup", () => {
     expect((await ping(h, a)).status).toBe(404);
   });
 
+  test("a new session is protected during its own initialize at the cap", async () => {
+    setEnv("LOTL_MCP_MAX_SESSIONS", "1");
+    const h = await start();
+    // Hold the first initialize response after the session is registered.
+    const realHandle = WebStandardStreamableHTTPServerTransport.prototype.handleRequest;
+    let gate!: () => void;
+    const gated = new Promise<void>((r) => { gate = r; });
+    let first = true;
+    const spy = vi.spyOn(WebStandardStreamableHTTPServerTransport.prototype, "handleRequest")
+      .mockImplementation(async function (this: any, ...a: any[]) {
+        const res = await (realHandle as any).apply(this, a);
+        if (first) { first = false; await gated; }
+        return res;
+      });
+    try {
+      const firstInit = raw(h.port, "POST", "/mcp", mcpHeaders(h.port), INIT);
+      for (let i = 0; i < 100 && h.sessionCount() < 1; i++) await sleep(10);
+      expect(h.sessionCount()).toBe(1);
+      const second = await raw(h.port, "POST", "/mcp", mcpHeaders(h.port), INIT);
+      expect(second.status).toBe(200);
+      expect(h.sessionCount()).toBe(2);   // soft cap: first was busy, not evicted
+      gate();
+      const r = await firstInit;
+      expect(r.status).toBe(200);
+      const sid = r.headers["mcp-session-id"] as string;
+      expect((await ping(h, sid)).status).toBe(200);
+    } finally {
+      gate(); spy.mockRestore();
+    }
+  });
+
+  test("createSession closes the new McpServer when connect() throws", async () => {
+    const h = await start();
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const connect = vi.spyOn(McpServer.prototype, "connect").mockRejectedValueOnce(new Error("boom"));
+    const close = vi.spyOn(McpServer.prototype, "close");
+    try {
+      const r = await raw(h.port, "POST", "/mcp", mcpHeaders(h.port), INIT);
+      expect(r.status).toBe(500);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(h.sessionCount()).toBe(0);
+    } finally {
+      connect.mockRestore(); close.mockRestore(); err.mockRestore();
+    }
+  });
+
+  test("a new server is closed when handleRequest throws", async () => {
+    const h = await start();
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const handle = vi.spyOn(WebStandardStreamableHTTPServerTransport.prototype, "handleRequest")
+      .mockRejectedValueOnce(new Error("boom"));
+    const close = vi.spyOn(McpServer.prototype, "close");
+    try {
+      const r = await raw(h.port, "POST", "/mcp", mcpHeaders(h.port), INIT);
+      expect(r.status).toBe(500);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(h.sessionCount()).toBe(0);
+    } finally {
+      handle.mockRestore(); close.mockRestore(); err.mockRestore();
+    }
+  });
+
+  test("a new server is closed when initialize yields no session", async () => {
+    const h = await start();
+    const handle = vi.spyOn(WebStandardStreamableHTTPServerTransport.prototype, "handleRequest")
+      .mockResolvedValueOnce(new Response("{}", { status: 200, headers: { "content-type": "application/json" } }));
+    const close = vi.spyOn(McpServer.prototype, "close");
+    try {
+      const r = await raw(h.port, "POST", "/mcp", mcpHeaders(h.port), INIT);
+      expect(r.status).toBe(200);
+      expect(r.headers["mcp-session-id"]).toBeUndefined();
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(h.sessionCount()).toBe(0);
+    } finally {
+      handle.mockRestore(); close.mockRestore();
+    }
+  });
+
+  test("a session finishing initialize after stop() began is closed, not kept", async () => {
+    const h = await start();
+    const realHandle = WebStandardStreamableHTTPServerTransport.prototype.handleRequest;
+    let gate!: () => void;
+    const gated = new Promise<void>((r) => { gate = r; });
+    let entered!: () => void;
+    const inHandler = new Promise<void>((r) => { entered = r; });
+    const handle = vi.spyOn(WebStandardStreamableHTTPServerTransport.prototype, "handleRequest")
+      .mockImplementation(async function (this: any, ...a: any[]) {
+        entered(); await gated;
+        return (realHandle as any).apply(this, a);
+      });
+    const close = vi.spyOn(McpServer.prototype, "close");
+    try {
+      const init = raw(h.port, "POST", "/mcp", mcpHeaders(h.port), INIT).catch((e) => e);
+      await inHandler;
+      const stopped = h.stop();
+      gate();
+      await stopped;
+      await init;
+      expect(h.sessionCount()).toBe(0);
+      expect(close).toHaveBeenCalledTimes(1);
+    } finally {
+      gate(); handle.mockRestore(); close.mockRestore();
+    }
+  });
+
   test("an open GET stream counts as in flight until it closes", async () => {
     setEnv("LOTL_MCP_MAX_SESSIONS", "1");
     const h = await start();
     const a = await open(h);
-    const stream = request({ host: "127.0.0.1", port: h.port, method: "GET", path: "/mcp",
+    const stream = request({ host: connectAddr(h.port), port: h.port, method: "GET", path: "/mcp",
       headers: { host: `localhost:${h.port}`, accept: "text/event-stream", "mcp-session-id": a, "mcp-protocol-version": "2025-03-26" } });
     stream.on("response", (res) => res.resume());
     stream.on("error", () => {});
@@ -345,7 +467,7 @@ describe("memory serve: Host/Origin guard", () => {
     db = openDatabase(join(dir, "t.sqlite"));
     initializeDatabase(db);
     server = await startMemoryServer(db, { host: "127.0.0.1", port: 0 });
-    port = (server.address() as AddressInfo).port;
+    port = bound(server);
   });
   afterAll(async () => {
     await new Promise<void>((r) => server.close(() => r()));
@@ -402,7 +524,7 @@ describe("memory serve: wildcard bind, IPv6, warning", () => {
   const listen = async (opts: Parameters<typeof startMemoryServer>[1]) => {
     const s = await startMemoryServer(db, opts);
     servers.push(s);
-    return (s.address() as AddressInfo).port;
+    return bound(s);
   };
   beforeAll(() => {
     dir = mkdtempSync(join(tmpdir(), "lotl-memwild-"));
