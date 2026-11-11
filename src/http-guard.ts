@@ -4,10 +4,11 @@
  * name to 127.0.0.1 sends `Host: attacker.example`, and browsers always send
  * `Origin` on cross-site fetches.
  *
- * Policy: Host must be a loopback name (or the configured bind host, or listed
+ * Policy: Host must be a loopback name (or the configured concrete bind host, or listed
  * in LOTL_HTTP_ALLOWED_HOSTS). Origin, when present, must be a loopback origin
  * (or listed in LOTL_HTTP_ALLOWED_ORIGINS). A missing Origin is fine: CLI and
- * agent clients do not send one.
+ * agent clients do not send one. A wildcard bind (0.0.0.0, ::) admits no name
+ * of its own: list the names in LOTL_HTTP_ALLOWED_HOSTS.
  */
 import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from "node:http";
 
@@ -38,12 +39,22 @@ function bracket(name: string): string {
   return name.includes(":") && !name.startsWith("[") ? `[${name}]` : name;
 }
 
+const WILDCARD_BINDS = new Set(["0.0.0.0", "::", "[::]"]);
+
+/** The bind host as an accepted name; a wildcard address is never one. */
+function concreteBind(opts: HttpGuardOptions): string | undefined {
+  const b = opts.bindHost?.trim().toLowerCase();
+  if (!b || WILDCARD_BINDS.has(b)) return undefined;
+  return bracket(b);
+}
+
 function hostAllowed(header: string | undefined, opts: HttpGuardOptions): boolean {
   if (!header) return false;
   const parsed = parseHostHeader(header);
   if (!parsed) return false;
   if (LOOPBACK_HOSTS.has(parsed.name)) return true;
-  if (opts.bindHost && parsed.name === bracket(opts.bindHost.toLowerCase())) return true;
+  const bind = concreteBind(opts);
+  if (bind && parsed.name === bind) return true;
   const full = parsed.port ? `${parsed.name}:${parsed.port}` : parsed.name;
   // An env entry without a port admits any port; with a port it must match.
   return csvEnv("LOTL_HTTP_ALLOWED_HOSTS").some((e) => e === full || e === parsed.name);
@@ -62,7 +73,8 @@ function originAllowed(header: string | undefined, opts: HttpGuardOptions): bool
   if (url.protocol !== "http:" && url.protocol !== "https:") return false;
   if (url.origin !== origin) return false; // reject paths, userinfo, odd forms
   if (LOOPBACK_HOSTS.has(url.hostname)) return true;
-  return !!opts.bindHost && url.hostname === bracket(opts.bindHost.toLowerCase());
+  const bind = concreteBind(opts);
+  return !!bind && url.hostname === bind;
 }
 
 /** Returns an error message when the request must be refused, else null. */

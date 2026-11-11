@@ -970,7 +970,7 @@ describe("MCP HTTP Transport", () => {
     });
     expect(res.status).toBe(400);
     expect((await res.json()).error.code).toBe(-32700);
-    const rest = await fetch(`${baseUrl}/query`, { method: "POST", body: "{not json" });
+    const rest = await fetch(`${baseUrl}/query`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{not json" });
     expect(rest.status).toBe(400);
     // still serving
     expect((await fetch(`${baseUrl}/health`)).status).toBe(200);

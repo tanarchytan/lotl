@@ -233,6 +233,11 @@ async function handleApi(
 // Server
 // =============================================================================
 
+function isLoopbackHost(host: string): boolean {
+  const h = host.toLowerCase();
+  return h === "localhost" || h === "::1" || h === "[::1]" || h.startsWith("127.");
+}
+
 /**
  * Start the memory web server. Resolves with the listening `Server` so the
  * caller can await `close()` on shutdown. The provided `db` is owned by the
@@ -248,7 +253,7 @@ export function startMemoryServer(db: Database, options: MemoryServerOptions = {
       try {
         if (rejectForbiddenRequest(req, res, { bindHost: host })) return;
 
-        const url = new URL(req.url || "/", `http://${host}:${port}`);
+        const url = new URL(req.url || "/", "http://localhost");
 
         if (token && !tokenMatches(token, extractToken(req, url))) {
           return sendJson(res, 401, { error: "unauthorized" });
@@ -274,6 +279,11 @@ export function startMemoryServer(db: Database, options: MemoryServerOptions = {
     server.once("error", reject);
     server.listen(port, host, () => {
       server.off("error", reject);
+      if (!token && !isLoopbackHost(host)) {
+        console.error(
+          `lotl memory serve: listening on ${host}:${port} without a token. The API is reachable from the network without authentication; set LOTL_MEMORY_SERVE_TOKEN.`,
+        );
+      }
       resolve(server);
     });
   });

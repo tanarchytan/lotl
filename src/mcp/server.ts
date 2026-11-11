@@ -1578,8 +1578,9 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
   // The store is shared — it's stateless SQLite, safe for concurrent access.
   // A session owns only its McpServer and transport. The store (SQLite handle)
   // is shared and closed once, in stop(); closing a session never touches it.
-  type Session = { transport: WebStandardStreamableHTTPServerTransport; server: McpServer; lastSeen: number };
+  type Session = { transport: WebStandardStreamableHTTPServerTransport; server: McpServer; lastSeen: number; inFlight: number };
   const sessions = new Map<string, Session>();
+  let stopping = false;
 
   const idleMs = positiveIntEnv("LOTL_MCP_SESSION_IDLE_MS", MCP_HTTP_SESSION_IDLE_MS);
   const maxSessions = positiveIntEnv("LOTL_MCP_MAX_SESSIONS", MCP_HTTP_MAX_SESSIONS);
@@ -1596,29 +1597,44 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
     }
   }
 
-  /** Make room for one more session by closing least recently used ones. */
+  /**
+   * Mark a request as in flight on a session. The returned release runs at most
+   * once, on the response's "close" event: Node emits it exactly once per
+   * response, after a normal finish or when the connection drops, and for a
+   * long-lived GET stream when the stream ends. Both ends refresh lastSeen.
+   */
+  function acquire(sessionId: string | undefined, res: ServerResponse): void {
+    const s = sessionId ? sessions.get(sessionId) : undefined;
+    if (!s) return;
+    s.inFlight++;
+    s.lastSeen = Date.now();
+    res.once("close", () => {
+      s.inFlight--;
+      s.lastSeen = Date.now();
+    });
+  }
+
+  /** Make room for one more session by closing least recently used idle ones. */
   function evictForNewSession(): void {
     while (sessions.size >= maxSessions) {
       let oldestId: string | undefined;
       let oldest = Infinity;
       for (const [id, s] of sessions) {
-        if (s.lastSeen < oldest) { oldest = s.lastSeen; oldestId = id; }
+        if (s.inFlight === 0 && s.lastSeen < oldest) { oldest = s.lastSeen; oldestId = id; }
       }
-      if (oldestId === undefined) return;
+      if (oldestId === undefined) {
+        log(`${ts()} Session cap ${maxSessions} reached and every session is busy, admitting one more`);
+        return;
+      }
       log(`${ts()} Session cap ${maxSessions} reached, closing LRU ${oldestId}`);
       void closeSession(oldestId);
     }
   }
 
-  function touch(sessionId: string): void {
-    const s = sessions.get(sessionId);
-    if (s) s.lastSeen = Date.now();
-  }
-
   const sweepTimer = setInterval(() => {
     const cutoff = Date.now() - idleMs;
     for (const [id, s] of sessions) {
-      if (s.lastSeen < cutoff) {
+      if (s.inFlight === 0 && s.lastSeen < cutoff) {
         log(`${ts()} Session ${id} idle, closing`);
         void closeSession(id);
       }
@@ -1631,14 +1647,20 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
       sessionIdGenerator: () => randomUUID(),
       enableJsonResponse: true,
       onsessioninitialized: (sessionId: string) => {
+        if (stopping) return; // handler closes the unregistered session
         evictForNewSession();
         sessions.set(sessionId, session);
         log(`${ts()} New session ${sessionId} (${sessions.size} active)`);
       },
     });
     const server = await createMcpServer(storePromise);
-    await server.connect(transport);
-    const session: Session = { transport, server, lastSeen: Date.now() };
+    try {
+      await server.connect(transport);
+    } catch (err) {
+      await server.close().catch(() => {});
+      throw err;
+    }
+    const session: Session = { transport, server, lastSeen: Date.now(), inFlight: 0 };
 
     // Keep the handler connect() installed; just also forget the session.
     const protocolOnClose = transport.onclose;
@@ -1721,6 +1743,13 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
       // REST endpoint: POST /search — structured search without MCP protocol
       // REST endpoint: POST /query (alias: /search) — structured search without MCP protocol
       if ((pathname === "/query" || pathname === "/search") && nodeReq.method === "POST") {
+        // A cross-site page can send a blind text/plain POST without preflight.
+        const mediaType = String(nodeReq.headers["content-type"] ?? "").split(";")[0]!.trim().toLowerCase();
+        if (mediaType !== "application/json") {
+          nodeRes.writeHead(415, { "Content-Type": "application/json" });
+          nodeRes.end(JSON.stringify({ error: "Unsupported Media Type: use Content-Type: application/json" }));
+          return;
+        }
         const rawBody = await collectBody(nodeReq);
         const params = parseJsonOrReply(rawBody, nodeRes, false);
         if (params === PARSE_FAILED) return;
@@ -1776,6 +1805,9 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
       }
 
       if (pathname === "/mcp" && nodeReq.method === "POST") {
+        // Count the request as in flight from the headers on, so a slow body
+        // upload also protects the session.
+        acquire(nodeReq.headers["mcp-session-id"] as string | undefined, nodeRes);
         const rawBody = await collectBody(nodeReq);
         const body = parseJsonOrReply(rawBody, nodeRes, true);
         if (body === PARSE_FAILED) return;
@@ -1802,7 +1834,6 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
             }));
             return;
           }
-          existing.lastSeen = Date.now();
           transport = existing.transport;
         } else if (isInitializeRequest(body)) {
           fresh = await createSession();
@@ -1818,9 +1849,16 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
         }
 
         const request = new Request(url, { method: "POST", headers, body: rawBody });
-        const response = await transport.handleRequest(request, { parsedBody: body });
-        // Initialize that did not yield a session: free the server we built.
-        if (fresh && !transport.sessionId) await fresh.server.close().catch(() => {});
+        let response: Response;
+        try {
+          response = await transport.handleRequest(request, { parsedBody: body });
+        } finally {
+          // A new server that never became a registered session (no session id,
+          // handleRequest threw, or stop() began meanwhile) must be freed.
+          if (fresh && !(transport.sessionId && sessions.get(transport.sessionId) === fresh)) {
+            await fresh.server.close().catch(() => {});
+          }
+        }
 
         nodeRes.writeHead(response.status, Object.fromEntries(response.headers.entries()));
         nodeRes.end(Buffer.from(await response.arrayBuffer()));
@@ -1857,7 +1895,7 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
         }
 
         const transport = found.transport;
-        touch(sessionId);
+        acquire(sessionId, nodeRes);
         const url = `http://localhost:${port}${pathname}`;
         const rawBody = nodeReq.method !== "GET" && nodeReq.method !== "HEAD" ? await collectBody(nodeReq) : undefined;
         const request = new Request(url, { method: nodeReq.method || "GET", headers, ...(rawBody ? { body: rawBody } : {}) });
@@ -1876,14 +1914,18 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
     }
   });
 
-  await new Promise<void>((resolve, reject) => {
-    httpServer.on("error", reject);
-    httpServer.listen(port, "localhost", () => resolve());
-  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      httpServer.on("error", reject);
+      httpServer.listen(port, "localhost", () => resolve());
+    });
+  } catch (err) {
+    clearInterval(sweepTimer);
+    throw err;
+  }
 
   const actualPort = (httpServer.address() as import("net").AddressInfo).port;
 
-  let stopping = false;
   const stop = async () => {
     if (stopping) return;
     stopping = true;
