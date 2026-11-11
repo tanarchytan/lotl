@@ -12,6 +12,7 @@
  * with a project-scoped .mcp.json inspects that repo's private memories.
  */
 
+import { rejectForbiddenRequest } from "../http-guard.js";
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { Database } from "../db.js";
@@ -245,6 +246,8 @@ export function startMemoryServer(db: Database, options: MemoryServerOptions = {
   const server = createServer((req, res) => {
     void (async () => {
       try {
+        if (rejectForbiddenRequest(req, res, { bindHost: host })) return;
+
         const url = new URL(req.url || "/", `http://${host}:${port}`);
 
         if (token && !tokenMatches(token, extractToken(req, url))) {

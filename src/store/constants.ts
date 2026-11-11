@@ -197,3 +197,13 @@ export const MEMORY_SYNONYMS: Record<string, string[]> = {
   recently: ["lately", "latest"],
   "yesterday": ["recent"],
 };
+
+// `lotl mcp --http`: one McpServer + transport per client session. Sessions
+// idle longer than the limit are closed by a sweep; past the cap the least
+// recently used session is closed first. Env overrides: LOTL_MCP_SESSION_IDLE_MS,
+// LOTL_MCP_MAX_SESSIONS (read when the server starts).
+// The cap is what bounds memory (about 0.5 MB per session in the 2026-11-10
+// stress test). The idle limit is long on purpose: a client that sits idle
+// and then gets "unknown session" has to re-initialize, and not all do.
+export const MCP_HTTP_SESSION_IDLE_MS = 4 * 60 * 60 * 1000;
+export const MCP_HTTP_MAX_SESSIONS = 64;

@@ -22,6 +22,8 @@ import { WebStandardStreamableHTTPServerTransport }
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { existsSync } from "fs";
+import { rejectForbiddenRequest } from "../http-guard.js";
+import { MCP_HTTP_SESSION_IDLE_MS, MCP_HTTP_MAX_SESSIONS } from "../store/constants.js";
 import {
   createStore,
   extractSnippet,
@@ -1540,7 +1542,14 @@ export type HttpServerHandle = {
   httpServer: import("http").Server;
   port: number;
   stop: () => Promise<void>;
+  /** Live MCP sessions (initialized, not yet closed or expired). */
+  sessionCount: () => number;
 };
+
+function positiveIntEnv(name: string, fallback: number): number {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : fallback;
+}
 
 /**
  * Start MCP server over Streamable HTTP (JSON responses, no SSE).
@@ -1567,27 +1576,78 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
 
   // Session map: each client gets its own McpServer + Transport pair (MCP spec requirement).
   // The store is shared — it's stateless SQLite, safe for concurrent access.
-  const sessions = new Map<string, WebStandardStreamableHTTPServerTransport>();
+  // A session owns only its McpServer and transport. The store (SQLite handle)
+  // is shared and closed once, in stop(); closing a session never touches it.
+  type Session = { transport: WebStandardStreamableHTTPServerTransport; server: McpServer; lastSeen: number };
+  const sessions = new Map<string, Session>();
 
-  async function createSession(): Promise<WebStandardStreamableHTTPServerTransport> {
+  const idleMs = positiveIntEnv("LOTL_MCP_SESSION_IDLE_MS", MCP_HTTP_SESSION_IDLE_MS);
+  const maxSessions = positiveIntEnv("LOTL_MCP_MAX_SESSIONS", MCP_HTTP_MAX_SESSIONS);
+
+  /** Drop a session from the map, then close its server (which closes the transport). */
+  async function closeSession(sessionId: string): Promise<void> {
+    const s = sessions.get(sessionId);
+    if (!s) return;
+    sessions.delete(sessionId);
+    try {
+      await s.server.close();
+    } catch (err) {
+      console.error(`Closing session ${sessionId} failed:`, err);
+    }
+  }
+
+  /** Make room for one more session by closing least recently used ones. */
+  function evictForNewSession(): void {
+    while (sessions.size >= maxSessions) {
+      let oldestId: string | undefined;
+      let oldest = Infinity;
+      for (const [id, s] of sessions) {
+        if (s.lastSeen < oldest) { oldest = s.lastSeen; oldestId = id; }
+      }
+      if (oldestId === undefined) return;
+      log(`${ts()} Session cap ${maxSessions} reached, closing LRU ${oldestId}`);
+      void closeSession(oldestId);
+    }
+  }
+
+  function touch(sessionId: string): void {
+    const s = sessions.get(sessionId);
+    if (s) s.lastSeen = Date.now();
+  }
+
+  const sweepTimer = setInterval(() => {
+    const cutoff = Date.now() - idleMs;
+    for (const [id, s] of sessions) {
+      if (s.lastSeen < cutoff) {
+        log(`${ts()} Session ${id} idle, closing`);
+        void closeSession(id);
+      }
+    }
+  }, Math.min(Math.max(Math.floor(idleMs / 4), 50), 60_000));
+  sweepTimer.unref();
+
+  async function createSession(): Promise<Session> {
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       enableJsonResponse: true,
       onsessioninitialized: (sessionId: string) => {
-        sessions.set(sessionId, transport);
+        evictForNewSession();
+        sessions.set(sessionId, session);
         log(`${ts()} New session ${sessionId} (${sessions.size} active)`);
       },
     });
     const server = await createMcpServer(storePromise);
     await server.connect(transport);
+    const session: Session = { transport, server, lastSeen: Date.now() };
 
+    // Keep the handler connect() installed; just also forget the session.
+    const protocolOnClose = transport.onclose;
     transport.onclose = () => {
-      if (transport.sessionId) {
-        sessions.delete(transport.sessionId);
-      }
+      protocolOnClose?.();
+      if (transport.sessionId) sessions.delete(transport.sessionId);
     };
 
-    return transport;
+    return session;
   }
 
   const startTime = Date.now();
@@ -1647,6 +1707,9 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
     const pathname = nodeReq.url || "/";
 
     try {
+      // DNS-rebinding guard: before any body read or session creation.
+      if (rejectForbiddenRequest(nodeReq, nodeRes)) return;
+
       if (pathname === "/health" && nodeReq.method === "GET") {
         const body = JSON.stringify({ status: "ok", uptime: Math.floor((Date.now() - startTime) / 1000) });
         nodeRes.writeHead(200, { "Content-Type": "application/json" });
@@ -1726,6 +1789,7 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
         // Route to existing session or create new one on initialize
         const sessionId = headers["mcp-session-id"];
         let transport: WebStandardStreamableHTTPServerTransport;
+        let fresh: Session | undefined;
 
         if (sessionId) {
           const existing = sessions.get(sessionId);
@@ -1738,9 +1802,11 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
             }));
             return;
           }
-          transport = existing;
+          existing.lastSeen = Date.now();
+          transport = existing.transport;
         } else if (isInitializeRequest(body)) {
-          transport = await createSession();
+          fresh = await createSession();
+          transport = fresh.transport;
         } else {
           nodeRes.writeHead(400, { "Content-Type": "application/json" });
           nodeRes.end(JSON.stringify({
@@ -1753,6 +1819,8 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
 
         const request = new Request(url, { method: "POST", headers, body: rawBody });
         const response = await transport.handleRequest(request, { parsedBody: body });
+        // Initialize that did not yield a session: free the server we built.
+        if (fresh && !transport.sessionId) await fresh.server.close().catch(() => {});
 
         nodeRes.writeHead(response.status, Object.fromEntries(response.headers.entries()));
         nodeRes.end(Buffer.from(await response.arrayBuffer()));
@@ -1777,8 +1845,8 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
           }));
           return;
         }
-        const transport = sessions.get(sessionId);
-        if (!transport) {
+        const found = sessions.get(sessionId);
+        if (!found) {
           nodeRes.writeHead(404, { "Content-Type": "application/json" });
           nodeRes.end(JSON.stringify({
             jsonrpc: "2.0",
@@ -1788,6 +1856,8 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
           return;
         }
 
+        const transport = found.transport;
+        touch(sessionId);
         const url = `http://localhost:${port}${pathname}`;
         const rawBody = nodeReq.method !== "GET" && nodeReq.method !== "HEAD" ? await collectBody(nodeReq) : undefined;
         const request = new Request(url, { method: nodeReq.method || "GET", headers, ...(rawBody ? { body: rawBody } : {}) });
@@ -1817,10 +1887,8 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
   const stop = async () => {
     if (stopping) return;
     stopping = true;
-    for (const transport of sessions.values()) {
-      await transport.close();
-    }
-    sessions.clear();
+    clearInterval(sweepTimer);
+    for (const id of [...sessions.keys()]) await closeSession(id);
     httpServer.close();
     // Close the store only if the background attach resolved; if it failed or is
     // still pending there is nothing to close.
@@ -1843,7 +1911,7 @@ export async function startMcpHttpServer(port: number, options?: { quiet?: boole
   });
 
   log(`Lotl MCP server listening on http://localhost:${actualPort}/mcp`);
-  return { httpServer, port: actualPort, stop };
+  return { httpServer, port: actualPort, stop, sessionCount: () => sessions.size };
 }
 
 // Run if this is the main module
