@@ -182,11 +182,11 @@ describe("full-text dedup", () => {
     const dst = openDatabase(join(tmp, "dst.sqlite"));
     try {
       initializeDatabase(dst);
-      expect(await importMemories(dst, file)).toEqual({ imported: 2, duplicates: 0 });
+      expect(await importMemories(dst, file)).toEqual({ imported: 2, duplicates: 0, errors: 0 });
       expect(rows(dst).map(r => r.content_hash)).toEqual([contentHash(A), contentHash(B)]);
       expect((await memoryStore(dst, { text: A })).status).toBe("duplicate");
       expect((await memoryStore(dst, { text: B })).status).toBe("duplicate");
-      expect(await importMemories(dst, file)).toEqual({ imported: 0, duplicates: 2 });
+      expect(await importMemories(dst, file)).toEqual({ imported: 0, duplicates: 2, errors: 0 });
       expect(count(dst, "memories")).toBe(2);
     } finally {
       dst.close();

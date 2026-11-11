@@ -95,13 +95,15 @@ describe("redaction on capture", () => {
     expect(hist.new_value).not.toContain(secret);
   });
 
-  test("memoryStoreBatch throws when an item is entirely private", async () => {
-    await expect(
-      memoryStoreBatch(db, [
-        { text: "Fine, keep this one.", category: "fact", scope: "global" },
-        { text: "<private>nothing survives redaction</private>", category: "fact", scope: "global" },
-      ])
-    ).rejects.toThrow();
+  test("memoryStoreBatch reports an entirely private item as that item's error and stores the rest", async () => {
+    const results = await memoryStoreBatch(db, [
+      { text: "Fine, keep this one.", category: "fact", scope: "global" },
+      { text: "<private>nothing survives redaction</private>", category: "fact", scope: "global" },
+    ]);
+    expect(results[0]!.status).toBe("created");
+    expect(results[1]).toEqual({ id: "", status: "error", error: "Memory text is empty after redacting <private> content" });
+    const texts = (db.prepare(`SELECT text FROM memories`).all() as { text: string }[]).map(r => r.text);
+    expect(texts).toEqual(["Fine, keep this one."]);
   });
 });
 

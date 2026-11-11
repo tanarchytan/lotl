@@ -63,9 +63,26 @@ export function toSlug(name: string): string {
 // Knowledge CRUD
 // =============================================================================
 
+type TimelineRow = { id: string; object: string; valid_from: number | null; valid_until: number | null; created_at: number };
+
+/** A NULL valid_from (never written by knowledgeStore) reads as "always". */
+const startOf = (r: TimelineRow): number => r.valid_from ?? Number.NEGATIVE_INFINITY;
+const inForceAt = (r: TimelineRow, t: number): boolean =>
+  startOf(r) <= t && (r.valid_until === null || r.valid_until > t);
+
 /**
- * Store a fact. Auto-invalidates conflicting prior facts on the same
- * subject+predicate (sets valid_until = now on the old entry).
+ * Store a fact. Every predicate is single-valued: for one subject+predicate
+ * the facts form a timeline ordered by valid_from, and a new fact that starts
+ * at t (valid_from, default now):
+ *  - ends the fact in force at t (latest valid_from <= t, window covering t)
+ *    at t, not at the wall clock, so a backdated fact does not overlap it and
+ *    a future-dated one leaves it in force until t;
+ *  - ends itself where the earliest later fact starts (else stays open);
+ *  - is a no-op returning the existing id when the fact in force at t already
+ *    has this object, and extends the next fact back to t when that one has
+ *    this object, instead of adding a second copy.
+ * Scope does not separate timelines (unchanged): a store in any scope ends
+ * the fact in force for the same subject+predicate.
  */
 export function knowledgeStore(
   db: Database,
@@ -79,30 +96,43 @@ export function knowledgeStore(
   const validFrom = options.valid_from ?? now;
   const confidence = Math.max(0, Math.min(1, options.confidence ?? 1.0));
 
-  // Auto-invalidate conflicting prior facts
-  const existing = db.prepare(`
-    SELECT id, object FROM knowledge
-    WHERE subject = ? AND predicate = ? AND valid_until IS NULL
-  `).all(subject, predicate) as { id: string; object: string }[];
+  return db.transaction(() => {
+    const timeline = db.prepare(`
+      SELECT id, object, valid_from, valid_until, created_at FROM knowledge
+      WHERE subject = ? AND predicate = ?
+    `).all(subject, predicate) as TimelineRow[];
 
-  const invalidated: string[] = [];
-  for (const old of existing) {
-    if (old.object !== object) {
-      db.prepare(`UPDATE knowledge SET valid_until = ? WHERE id = ?`).run(now, old.id);
-      invalidated.push(old.id);
-    } else {
-      // Same fact already exists and is valid — just return it
-      return { id: old.id, invalidated: [] };
+    let current: TimelineRow | null = null;
+    let next: TimelineRow | null = null;
+    for (const r of timeline) {
+      if (inForceAt(r, validFrom)) {
+        if (!current || startOf(r) > startOf(current) || (startOf(r) === startOf(current) && r.created_at > current.created_at)) current = r;
+      } else if (r.valid_from !== null && r.valid_from > validFrom) {
+        if (!next || r.valid_from < next.valid_from!) next = r;
+      }
     }
-  }
 
-  const id = randomUUID();
-  db.prepare(`
-    INSERT INTO knowledge (id, subject, predicate, object, valid_from, confidence, source_memory_id, scope, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, subject, predicate, object, validFrom, confidence, options.source_memory_id ?? null, scope, now);
+    if (current?.object === object) return { id: current.id, invalidated: [] };
 
-  return { id, invalidated };
+    const invalidated: string[] = [];
+    if (current) {
+      db.prepare(`UPDATE knowledge SET valid_until = ? WHERE id = ?`).run(validFrom, current.id);
+      invalidated.push(current.id);
+    }
+
+    if (next?.object === object) {
+      db.prepare(`UPDATE knowledge SET valid_from = ? WHERE id = ?`).run(validFrom, next.id);
+      return { id: next.id, invalidated };
+    }
+
+    const id = randomUUID();
+    db.prepare(`
+      INSERT INTO knowledge (id, subject, predicate, object, valid_from, valid_until, confidence, source_memory_id, scope, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, subject, predicate, object, validFrom, next?.valid_from ?? null, confidence, options.source_memory_id ?? null, scope, now);
+
+    return { id, invalidated };
+  })();
 }
 
 /**
@@ -149,7 +179,9 @@ export function knowledgeQuery(
 }
 
 /**
- * Invalidate a fact by setting valid_until to now.
+ * Invalidate a fact by setting valid_until to now. A fact whose window
+ * already ended (valid_until <= now) is left alone; one that is still in
+ * force but already has a later end (a future-dated successor) is ended now.
  */
 export function knowledgeInvalidate(
   db: Database,
@@ -157,9 +189,10 @@ export function knowledgeInvalidate(
 ): { invalidated: boolean } {
   const existing = db.prepare(`SELECT id, valid_until FROM knowledge WHERE id = ?`).get(id) as { id: string; valid_until: number | null } | null;
   if (!existing) return { invalidated: false };
-  if (existing.valid_until !== null) return { invalidated: false }; // already expired
+  const now = Date.now();
+  if (existing.valid_until !== null && existing.valid_until <= now) return { invalidated: false }; // already expired
 
-  db.prepare(`UPDATE knowledge SET valid_until = ? WHERE id = ?`).run(Date.now(), id);
+  db.prepare(`UPDATE knowledge SET valid_until = ? WHERE id = ?`).run(now, id);
   return { invalidated: true };
 }
 
@@ -172,13 +205,20 @@ export function knowledgeEntities(db: Database): string[] {
 }
 
 /**
- * Get all current (valid) facts about a subject.
+ * Get all current facts about a subject: those in force now, read the same
+ * way as knowledgeQuery's as_of. Not "valid_until IS NULL": a fact can be in
+ * force now and already end at a future-dated successor, and an open-ended
+ * future-dated fact is not current yet.
  */
 export function knowledgeAbout(db: Database, subject: string): KnowledgeEntry[] {
   const slug = toSlug(subject);
+  const now = Date.now();
   return db.prepare(`
-    SELECT * FROM knowledge WHERE subject = ? AND valid_until IS NULL ORDER BY predicate
-  `).all(slug) as KnowledgeEntry[];
+    SELECT * FROM knowledge WHERE subject = ?
+      AND (valid_from IS NULL OR valid_from <= ?)
+      AND (valid_until IS NULL OR valid_until > ?)
+    ORDER BY predicate
+  `).all(slug, now, now) as KnowledgeEntry[];
 }
 
 /**

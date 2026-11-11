@@ -49,7 +49,7 @@ describe("memory export/import round trip", () => {
     const dst = openDatabase(join(tmpDir, "dst.sqlite"));
     initializeDatabase(dst);
     const res = await importMemories(dst, file);
-    expect(res).toEqual({ imported: 2, duplicates: 0 });
+    expect(res).toEqual({ imported: 2, duplicates: 0, errors: 0 });
 
     const rows = dst.prepare("SELECT text, metadata FROM memories").all() as { text: string; metadata: string }[];
     const longRow = rows.find((r) => r.text.startsWith("roundtrip head line"))!;

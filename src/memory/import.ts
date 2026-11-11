@@ -225,11 +225,11 @@ export function exportMemories(db: Database, filePath: string): number {
 export async function importMemories(
   db: Database,
   filePath: string,
-): Promise<{ imported: number; duplicates: number }> {
+): Promise<{ imported: number; duplicates: number; errors: number }> {
   const content = readFileSync(filePath, "utf-8");
   const memories = JSON.parse(content) as ExportedMemory[];
 
-  if (memories.length === 0) return { imported: 0, duplicates: 0 };
+  if (memories.length === 0) return { imported: 0, duplicates: 0, errors: 0 };
 
   // Use batched store for bulk import — single embedding round-trip + transaction.
   // ~3-5x faster than per-memory store loop.
@@ -250,22 +250,32 @@ export async function importMemories(
     };
   });
 
+  // A bad item (empty, or empty after <private> redaction) is counted in
+  // `errors` and the rest is imported, on both paths.
   try {
     const results = await storeBatch(db, items);
     const imported = results.filter(r => r.status === "created").length;
     const duplicates = results.filter(r => r.status === "duplicate").length;
-    return { imported, duplicates };
+    const errors = results.filter(r => r.status === "error").length;
+    return { imported, duplicates, errors };
   } catch (err) {
     // Fallback: per-memory store if batch fails (e.g. embed provider down)
     process.stderr.write(`importMemories batch failed, falling back: ${err instanceof Error ? err.message : err}\n`);
     const store = await getMemoryStore();
     let imported = 0;
     let duplicates = 0;
+    let errors = 0;
     for (const item of items) {
-      const result = await store(db, item);
+      let result: Awaited<ReturnType<typeof store>>;
+      try {
+        result = await store(db, item);
+      } catch {
+        errors++;
+        continue;
+      }
       if (result.status === "created") imported++;
       else duplicates++;
     }
-    return { imported, duplicates };
+    return { imported, duplicates, errors };
   }
 }

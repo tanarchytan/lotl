@@ -48,7 +48,11 @@ export async function compactAllMemories(
     }
     if (!opts.apply) continue;
 
-    await memoryUpdate(db, { id: r.id, text: body, metadata: { ...meta, status: undefined, original: r.text, description } });
+    // Same marking as the write path: a low-confidence compaction (applied
+    // here only with --force) is `draft`. A confident one clears the review
+    // flag set above; any other status is the caller's and stays.
+    const status = lowConfidence ? "draft" : meta.status === "draft" ? undefined : meta.status;
+    await memoryUpdate(db, { id: r.id, text: body, metadata: { ...meta, status, original: r.text, description } });
     result.compacted++;
   }
 

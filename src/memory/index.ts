@@ -18,10 +18,10 @@ import { chunkDocument } from "../store/chunking.js";
 import { isOverBudget, compactMemoryText, BODY_MAX } from "../okf/budget.js";
 import { DEFAULT_ACTOR } from "../okf/concept.js";
 import { redactPrivate } from "./redact.js";
-import { memoryRowHash, metadataOriginal } from "./hash.js";
+import { memoryRowHash, metadataOriginal, memoryFullText } from "./hash.js";
 import { resolveConflict, guardConflict, conflictMode, type ConflictDecision } from "./conflict.js";
 import {
-  MEMORY_DEDUP_COSINE,
+  MEMORY_DEDUP_COSINE, MEMORY_DEDUP_NEIGHBOURS,
   STRONG_SIGNAL_MIN_SCORE, STRONG_SIGNAL_MIN_GAP,
   MEMORY_FTS_OVERFETCH, MEMORY_VEC_K_MULTIPLIER,
   MEMORY_RERANK_BLEND_ORIGINAL, MEMORY_RERANK_BLEND_RERANK,
@@ -600,16 +600,18 @@ export function ensureScopePartitions(db: Database, dimensions: number, scopes: 
  * of the compacted body, so a high score says the heads match, not that the
  * full texts do. Also skips vectors whose memory row is gone, so a stale
  * vector can never turn a store into a "duplicate" of nothing.
+ * Reads MEMORY_DEDUP_NEIGHBOURS neighbours so a real near-duplicate behind
+ * skipped ones is still seen, and keeps the nearest one that survives.
  */
 function findSimilarMemory(db: Database, embedding: number[], scope: string, threshold: number = 0.9): { id: string; score: number } | null {
   try {
     const results = db.prepare(
-      `SELECT id, distance FROM memories_vec WHERE embedding MATCH ? AND k = 5 AND scope = ?`
+      `SELECT id, distance FROM memories_vec WHERE embedding MATCH ? AND k = ${MEMORY_DEDUP_NEIGHBOURS} AND scope = ?`
     ).all(new Float32Array(embedding), scope) as { id: string; distance: number }[];
     const metaOf = db.prepare(`SELECT metadata FROM memories WHERE id = ?`);
     for (const r of results) {
       const similarity = 1 - r.distance;
-      if (similarity < threshold) continue;
+      if (similarity < threshold) break; // nearest first: nothing further qualifies
       const row = metaOf.get(r.id) as { metadata: string | null } | undefined;
       if (!row || metadataOriginal(row.metadata)) continue;
       return { id: r.id, score: similarity };
@@ -658,8 +660,11 @@ async function resolveNearDuplicate(db: Database, existingId: string, text: stri
   try {
     if (decision.action === "UPDATE") {
       if (!decision.merged) return "insert";
-      db.prepare(`UPDATE memories SET text = ?, content_hash = ?, last_accessed = ? WHERE id = ?`).run(decision.merged, memoryRowHash(decision.merged, existing.metadata), now, existingId);
-      db.prepare(`INSERT INTO memory_history (memory_id, action, old_value, new_value, timestamp) VALUES (?, 'UPDATE', ?, ?, ?)`).run(existingId, existing.text, decision.merged, now);
+      // Same path as a text-only memory_update: text, hash, history and the
+      // vector (re-embedded from the merged text; the old one is kept if that
+      // embed fails) change together.
+      await memoryUpdate(db, { id: existingId, text: decision.merged });
+      db.prepare(`UPDATE memories SET last_accessed = ? WHERE id = ?`).run(now, existingId);
       return "merged";
     }
     if (decision.action === "DELETE") {
@@ -671,6 +676,79 @@ async function resolveNearDuplicate(db: Database, existingId: string, text: stri
     return decision.action === "ADD" ? "insert" : "duplicate";
   } catch {
     return "duplicate";
+  }
+}
+
+// =============================================================================
+// Write-time helpers shared by store, batch store and update
+// =============================================================================
+
+/**
+ * OKF write-time budget: an over-budget full text is stored as its compacted
+ * body, with the one-line summary in metadata.description and the full text
+ * in metadata.original (okf_get serves it). A low-confidence compaction is
+ * OKF §5.4 `draft`: the body may have lost a load-bearing specific, so recall
+ * flags it rather than presenting it as fact. LOTL_OKF=off disables it.
+ * The one place this decision is made, for memoryStore, memoryStoreBatch and
+ * a text-only memoryUpdate.
+ */
+async function applyWriteBudget(
+  fullText: string,
+  metadata: Record<string, unknown>,
+): Promise<{ text: string; metadata: Record<string, unknown> }> {
+  if (process.env.LOTL_OKF === "off" || !isOverBudget(fullText)) return { text: fullText, metadata };
+  const { description, body, lowConfidence } = await compactMemoryText(fullText);
+  return {
+    text: body || fullText.slice(0, BODY_MAX),
+    metadata: { ...metadata, description, original: fullText, ...(lowConfidence ? { status: "draft" } : {}) },
+  };
+}
+
+/** The metadata column as an object; null or junk JSON reads as {}. */
+function parseMetadataObject(raw: string | null): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Metadata minus what an earlier write-time compaction put there, before the
+ * budget runs again on a new full text: `original` and `description` when the
+ * row was compacted, and a `draft` status (a lossy compaction, or the
+ * `memory compact` review flag, both about the old text). Other keys stay.
+ */
+function withoutCompactionState(meta: Record<string, unknown>): Record<string, unknown> {
+  const { original, description, status, ...rest } = meta;
+  const out: Record<string, unknown> = { ...rest };
+  if (metadataOriginal(meta) === null) {
+    if (original !== undefined) out.original = original;
+    if (description !== undefined) out.description = description;
+  }
+  if (status !== undefined && status !== "draft") out.status = status;
+  return out;
+}
+
+/**
+ * Replace a memory's vector with `embedding` (delete + insert in one
+ * savepoint, so a failed insert leaves the previous vector in place).
+ * A null embedding (no provider, or the embed call failed) keeps the old
+ * vector on purpose: a vector of the previous wording still lets semantic
+ * recall find the row, no vector at all hides it from semantic recall.
+ */
+function replaceMemoryVector(db: Database, id: string, scope: string, embedding: number[] | null): void {
+  if (!embedding) return;
+  try {
+    ensureMemoriesVecTable(db, embedding.length);
+    db.transaction(() => {
+      db.prepare(`DELETE FROM memories_vec WHERE id = ?`).run(id);
+      db.prepare(`INSERT INTO memories_vec (scope, id, embedding) VALUES (?, ?, ?)`).run(scope, id, new Float32Array(embedding));
+    })();
+  } catch (err) {
+    process.stderr.write(`Memory vector replace failed, previous vector kept: ${err instanceof Error ? err.message : err}\n`);
   }
 }
 
@@ -699,25 +777,22 @@ export async function memoryStore(
   // embedded/stored, so recall and the vector index see the caveman-compressed
   // body. The one-liner summary rides along in metadata.description, the full
   // (already redacted) text in metadata.original so okf_get can serve it on
-  // demand. Gate lets callers/tests opt out.
+  // demand (applyWriteBudget; LOTL_OKF=off opts out).
   //
   // Dedup invariant: a store may only answer "duplicate" when the full
-  // incoming text is already recoverable from the existing row. So
+  // incoming text is already recoverable from the existing row of the same
+  // scope. So
   //  - exact dedup hashes the FULL text (memoryRowHash: metadata.original when
   //    present, else text), never the compacted body: two long memories that
   //    share a head have the same body but different hashes;
   //  - cosine dedup is skipped when this memory was compacted, and never
   //    matches a compacted row (findSimilarMemory), because body similarity
-  //    says nothing about the full texts. Such a store is kept as a new row.
-  let metadata: Record<string, unknown> = { ...(options.metadata ?? {}), actor: options.actor ?? DEFAULT_ACTOR };
-  if (process.env.LOTL_OKF !== "off" && isOverBudget(text)) {
-    const original = text;
-    const { description, body, lowConfidence } = await compactMemoryText(original);
-    text = body || original.slice(0, BODY_MAX);
-    // A low-confidence compaction is OKF §5.4 `draft`: the body may have lost a
-    // load-bearing specific, so recall flags it rather than presenting it as fact.
-    metadata = { ...metadata, description, original, ...(lowConfidence ? { status: "draft" } : {}) };
-  }
+  //    says nothing about the full texts. Such a store is kept as a new row;
+  //  - both look only at rows of the store's scope: a duplicate in another
+  //    scope would leave this scope without the memory.
+  const budgeted = await applyWriteBudget(text, { ...(options.metadata ?? {}), actor: options.actor ?? DEFAULT_ACTOR });
+  text = budgeted.text;
+  const metadata = budgeted.metadata;
   const compacted = metadataOriginal(metadata) !== null;
 
   const hash = memoryRowHash(text, metadata);
@@ -726,10 +801,12 @@ export async function memoryStore(
   const importance = Math.max(0, Math.min(1, options.importance ?? 0.5));
   const now = Date.now();
 
-  // Fast dedup: exact content hash match
+  // Fast dedup: exact content hash match, same scope only (like cosine
+  // dedup): a store in one scope must never be dropped as a duplicate of a
+  // row in another scope, or a recall scoped to it would never find it.
   const existing = db.prepare(
-    `SELECT id FROM memories WHERE content_hash = ?`
-  ).get(hash) as { id: string } | null;
+    `SELECT id FROM memories WHERE content_hash = ? AND scope = ?`
+  ).get(hash, scope) as { id: string } | null;
   if (existing) {
     // Touch access count
     db.prepare(`UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?`).run(now, existing.id);
@@ -804,15 +881,25 @@ const BATCH_SQL_SLICE = 500;
  * loop. Most bulk ingests don't need cosine dedup because the source is
  * already deduplicated (raw conversation turns, extracted facts, etc.).
  *
- * Returns one result per input in the same order. created/duplicate status
- * is reported per-item.
+ * Returns one result per input in the same order, with a per-item status:
+ * created, duplicate, or error (empty text, or empty after <private>
+ * redaction; `error` holds memoryStore's message, `id` is ""). A bad item
+ * never fails the rest of the batch.
  */
+export type MemoryBatchResult = {
+  id: string;
+  status: "created" | "duplicate" | "error";
+  /** Only with status "error": why this item was not stored. */
+  error?: string;
+};
+
 export async function memoryStoreBatch(
   db: Database,
   items: MemoryStoreOptions[]
-): Promise<{ id: string; status: "created" | "duplicate" }[]> {
+): Promise<MemoryBatchResult[]> {
   if (items.length === 0) return [];
   const now = Date.now();
+  const itemErrors = new Map<number, string>(); // input index -> error message
 
   // Phase 0: chunking expansion. Items with chunk:true are split into
   // multiple chunk-items each ≤512 tokens, sharing metadata.doc_id so
@@ -835,14 +922,33 @@ export async function memoryStoreBatch(
       ? { ...raw, text: turnsToText(raw.turns, raw.userOnly === true) }
       : raw;
 
+    // A bad item is that item's error, with memoryStore's message; the rest
+    // of the batch is still stored.
+    const trimmed = (it.text ?? "").trim();
+    if (!trimmed) {
+      itemErrors.set(i, "Memory text cannot be empty");
+      continue;
+    }
+
     // Redact <private>...</private> spans before this item is chunked,
     // hashed, embedded, or inserted — same guarantee as memoryStore, applied
     // here because memoryStoreBatch inlines its own INSERT instead of
     // delegating to memoryStore.
-    if (it.text && it.text.trim()) {
-      const redacted = redactPrivate(it.text).trim();
-      if (!redacted) throw new Error("Memory text is empty after redacting <private> content");
-      if (redacted !== it.text) it = { ...it, text: redacted };
+    const redacted = redactPrivate(trimmed).trim();
+    if (!redacted) {
+      itemErrors.set(i, "Memory text is empty after redacting <private> content");
+      continue;
+    }
+    if (redacted !== it.text) it = { ...it, text: redacted };
+
+    // OKF write-time budget, same code as memoryStore. Not for chunk items
+    // (chunking is their answer to length: each piece keeps its own vector)
+    // and not for an item that already carries metadata.original (an
+    // imported compacted row: its text is already the body).
+    if (!it.chunk && metadataOriginal(it.metadata) === null) {
+      const before = it.metadata ?? {};
+      const budgeted = await applyWriteBudget(redacted, before);
+      if (budgeted.metadata !== before) it = { ...it, text: budgeted.text, metadata: budgeted.metadata };
     }
 
     if (it.chunk && it.text && it.text.length > CHUNK_MAX_CHARS) {
@@ -879,22 +985,30 @@ export async function memoryStoreBatch(
   // the same text stored by memoryStore and vice versa.
   // A chunk hashes its own text: a metadata.original it inherited from the
   // split item covers the whole item, and would collapse every chunk into one.
+  //
+  // Dedup is per scope, as in memoryStore: the key is scope + hash, both for
+  // stored rows and for repeats inside the batch.
   const hashes = expanded.map((it, i) =>
     memoryRowHash((it.text ?? "").trim(), chunkIdx.has(i) ? null : it.metadata));
-  const existingByHash = new Map<string, string>();
-  for (let s = 0; s < hashes.length; s += BATCH_SQL_SLICE) {
-    const slice = hashes.slice(s, s + BATCH_SQL_SLICE);
+  const dedupKeys = expanded.map((it, i) => `${it.scope || "global"}\u0000${hashes[i]}`);
+  const existingByKey = new Map<string, string>();
+  const uniqueHashes = [...new Set(hashes)];
+  for (let s = 0; s < uniqueHashes.length; s += BATCH_SQL_SLICE) {
+    const slice = uniqueHashes.slice(s, s + BATCH_SQL_SLICE);
     const existingRows = db.prepare(
-      `SELECT id, content_hash FROM memories WHERE content_hash IN (${slice.map(() => "?").join(",")})`
-    ).all(...slice) as { id: string; content_hash: string }[];
-    for (const r of existingRows) existingByHash.set(r.content_hash, r.id);
+      `SELECT id, content_hash, scope FROM memories WHERE content_hash IN (${slice.map(() => "?").join(",")})`
+    ).all(...slice) as { id: string; content_hash: string; scope: string }[];
+    for (const r of existingRows) {
+      const key = `${r.scope}\u0000${r.content_hash}`;
+      if (!existingByKey.has(key)) existingByKey.set(key, r.id);
+    }
   }
 
   // Phase 2: collect texts that need embedding (operates on the EXPANDED set).
   // A text repeated inside the batch is stored once; later copies resolve to
   // the first copy's id once ids are assigned below.
   const toEmbed: { idx: number; text: string }[] = [];
-  const firstIdxByHash = new Map<string, number>();
+  const firstIdxByKey = new Map<string, number>();
   const inBatchDupOf = new Map<number, number>();
   for (let i = 0; i < expanded.length; i++) {
     const text = (expanded[i]!.text ?? "").trim();
@@ -902,17 +1016,17 @@ export async function memoryStoreBatch(
       results[i] = { id: "", status: "duplicate" };
       continue;
     }
-    const existingId = existingByHash.get(hashes[i]!);
+    const existingId = existingByKey.get(dedupKeys[i]!);
     if (existingId) {
       results[i] = { id: existingId, status: "duplicate" };
       continue;
     }
-    const firstIdx = firstIdxByHash.get(hashes[i]!);
+    const firstIdx = firstIdxByKey.get(dedupKeys[i]!);
     if (firstIdx !== undefined) {
       inBatchDupOf.set(i, firstIdx);
       continue;
     }
-    firstIdxByHash.set(hashes[i]!, i);
+    firstIdxByKey.set(dedupKeys[i]!, i);
     toEmbed.push({ idx: i, text });
   }
 
@@ -1038,7 +1152,8 @@ export async function memoryStoreBatch(
   // and useful — chunks are stored sequentially so the first one is a stable
   // anchor). The status reports "created" if any chunk was created, "duplicate"
   // only if every chunk was already present.
-  const projected: { id: string; status: "created" | "duplicate" }[] = new Array(items.length);
+  const projected: MemoryBatchResult[] = new Array(items.length);
+  for (const [i, error] of itemErrors) projected[i] = { id: "", status: "error", error };
   for (let exIdx = 0; exIdx < expanded.length; exIdx++) {
     const origIdx = expandedOriginIdx[exIdx]!;
     const result = results[exIdx];
@@ -2160,21 +2275,38 @@ export async function memoryUpdate(
   // keeps one (after this update), else text. Recomputed whenever text or
   // metadata changes, so `memory compact` (body in text, full text moved to
   // metadata.original) keeps the hash of the full text it started from.
-  const finalMetadata = options.metadata !== undefined ? options.metadata : mem.metadata;
-
+  //
+  // Text with explicit metadata (the `memory compact` path) is written as
+  // given. A text-only update is a new full text: the write-time budget runs
+  // on it as in memoryStore, and the old compaction state (original,
+  // description, draft) is replaced, so the full text stays recoverable and
+  // the hash is of the text that is now true.
   if (options.text !== undefined && options.text !== mem.text) {
-    const newText = options.text.trim();
-    const newHash = memoryRowHash(newText, finalMetadata);
-    db.prepare(`UPDATE memories SET text = ?, content_hash = ? WHERE id = ?`).run(newText, newHash, options.id);
-    db.prepare(`INSERT INTO memory_history (memory_id, action, old_value, new_value, timestamp) VALUES (?, 'UPDATE', ?, ?, ?)`).run(options.id, mem.text, newText, now);
-
-    // Re-embed
-    const embedding = await embedText(newText);
-    if (embedding) {
-      ensureMemoriesVecTable(db, embedding.length);
-      try { db.prepare(`DELETE FROM memories_vec WHERE id = ?`).run(options.id); } catch {}
-      db.prepare(`INSERT INTO memories_vec (scope, id, embedding) VALUES (?, ?, ?)`).run(mem.scope, options.id, new Float32Array(embedding));
+    let newText = options.text.trim();
+    let newMetadata: Record<string, unknown> | string | null = options.metadata !== undefined ? options.metadata : mem.metadata;
+    let writeMetadata = false;
+    if (options.metadata === undefined) {
+      const oldMeta = parseMetadataObject(mem.metadata);
+      const budgeted = await applyWriteBudget(newText, withoutCompactionState(oldMeta));
+      newText = budgeted.text;
+      newMetadata = budgeted.metadata;
+      writeMetadata = JSON.stringify(budgeted.metadata) !== JSON.stringify(oldMeta);
     }
+    const newHash = memoryRowHash(newText, newMetadata);
+    // Embed before writing so text, hash, metadata, history and vector change
+    // in one transaction.
+    const embedding = await embedText(newText);
+    db.transaction(() => {
+      if (writeMetadata) {
+        db.prepare(`UPDATE memories SET text = ?, content_hash = ?, metadata = ? WHERE id = ?`).run(newText, newHash, JSON.stringify(newMetadata), options.id);
+      } else {
+        db.prepare(`UPDATE memories SET text = ?, content_hash = ? WHERE id = ?`).run(newText, newHash, options.id);
+      }
+      // old_value is the old FULL text: a text-only update of a compacted row
+      // replaces metadata.original, and this row is where it stays recoverable.
+      db.prepare(`INSERT INTO memory_history (memory_id, action, old_value, new_value, timestamp) VALUES (?, 'UPDATE', ?, ?, ?)`).run(options.id, memoryFullText(mem.text, mem.metadata), newText, now);
+      replaceMemoryVector(db, options.id, mem.scope, embedding);
+    })();
     changes.push("text");
   }
 
@@ -2199,6 +2331,123 @@ export async function memoryUpdate(
   }
 
   return { updated: changes.length > 0 };
+}
+
+// =============================================================================
+// Vector backfill
+// =============================================================================
+
+export type MemoryEmbedMissingOptions = {
+  /** Count only: no embed call, no write. */
+  dryRun?: boolean;
+  /** Rows per embed call + write transaction. Default 32. */
+  batchSize?: number;
+  /** Only rows of this scope. */
+  scope?: string;
+};
+
+export type MemoryEmbedMissingResult = {
+  /** Rows (in scope) that had no vector when the run started. */
+  missing: number;
+  /** Vectors written by this run. */
+  embedded: number;
+  /** Rows the provider returned no embedding for; left as they were. */
+  failed: number;
+  dryRun: boolean;
+  /** Which embedder a run would use, from configuration only (no call). */
+  provider: "local" | "remote" | "none";
+  /** Why the run stopped before the end, when it did. Nothing was dropped. */
+  aborted?: string;
+};
+
+const EMBED_MISSING_BATCH = 32;
+
+function configuredEmbedProvider(): MemoryEmbedMissingResult["provider"] {
+  if (process.env.LOTL_EMBED_BACKEND === "transformers") return "local";
+  try { return getRemoteConfig()?.embed ? "remote" : "none"; } catch { return "none"; }
+}
+
+/** memories_vec's shape, or null when the table does not exist. */
+function memoriesVecShape(db: Database): { dims: number | null; partitioned: boolean } | null {
+  const row = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='memories_vec'`).get() as { sql: string } | undefined;
+  if (!row) return null;
+  const m = row.sql.match(/float\[(\d+)\]/);
+  return { dims: m?.[1] ? parseInt(m[1], 10) : null, partitioned: /partition\s+key/i.test(row.sql) };
+}
+
+/**
+ * Embed memories that have no vector (stored while no embedding provider was
+ * configured, or when the embed call failed), so semantic recall can see
+ * them. Embeds `text` (the OKF body for a compacted row, as the write path
+ * does) into the row's scope partition.
+ *
+ * Safe to re-run: only rows without a vector are read, rows that have one
+ * are never touched, and each batch is written in one transaction, so an
+ * interrupted run keeps its finished batches. It never drops or recreates
+ * memories_vec: if the table's dimension (or shape) differs from what the
+ * provider returns, it stops before writing. The dry run reads the same row
+ * set and makes no embed call and no write.
+ */
+export async function memoryEmbedMissing(db: Database, options: MemoryEmbedMissingOptions = {}): Promise<MemoryEmbedMissingResult> {
+  const dryRun = options.dryRun === true;
+  const batchSize = Math.max(1, Math.floor(options.batchSize ?? EMBED_MISSING_BATCH));
+  const provider = configuredEmbedProvider();
+
+  const shape = memoriesVecShape(db);
+  const haveVector = new Set<string>();
+  if (shape) {
+    for (const r of db.prepare(`SELECT id FROM memories_vec`).all() as { id: string }[]) haveVector.add(r.id);
+  }
+  const rows = (options.scope !== undefined
+    ? db.prepare(`SELECT id, text, scope FROM memories WHERE scope = ? ORDER BY rowid`).all(options.scope)
+    : db.prepare(`SELECT id, text, scope FROM memories ORDER BY rowid`).all()
+  ) as { id: string; text: string; scope: string }[];
+  const todo = rows.filter(r => !haveVector.has(r.id));
+
+  const result: MemoryEmbedMissingResult = { missing: todo.length, embedded: 0, failed: 0, dryRun, provider };
+  if (dryRun || todo.length === 0) return result;
+  if (provider === "none") {
+    return { ...result, aborted: "no embedding provider configured (LOTL_EMBED_BACKEND=transformers or a remote embed provider)" };
+  }
+
+  let dims = shape?.dims ?? null;
+  if (shape && (!shape.partitioned || dims === null)) {
+    return { ...result, aborted: "memories_vec has an old shape (no scope partition); not touching it" };
+  }
+  const rowStillThere = db.prepare(`SELECT 1 FROM memories WHERE id = ?`);
+  let insert: ReturnType<typeof db.prepare> | null = shape ? db.prepare(`INSERT INTO memories_vec (scope, id, embedding) VALUES (?, ?, ?)`) : null;
+
+  for (let start = 0; start < todo.length; start += batchSize) {
+    const batch = todo.slice(start, start + batchSize);
+    const embeddings = await embedTextBatch(batch.map(r => r.text));
+    const got = embeddings.filter((e): e is number[] => !!e);
+    if (got.length === 0) {
+      result.failed += batch.length;
+      return { ...result, aborted: "the embedding provider returned no vectors; stopped" };
+    }
+    if (dims === null) {
+      dims = got[0]!.length;
+      db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS memories_vec USING vec0(scope TEXT PARTITION KEY, id TEXT PRIMARY KEY, embedding float[${dims}] distance_metric=cosine)`);
+      insert = db.prepare(`INSERT INTO memories_vec (scope, id, embedding) VALUES (?, ?, ?)`);
+    }
+    if (got.some(e => e.length !== dims)) {
+      return { ...result, aborted: `embedding dimension ${got.find(e => e.length !== dims)!.length} does not match memories_vec (${dims}); nothing written for this batch` };
+    }
+    db.transaction(() => {
+      batch.forEach((r, j) => {
+        const emb = embeddings[j];
+        if (!emb) { result.failed++; return; }
+        if (!rowStillThere.get(r.id)) return; // deleted since the scan
+        try {
+          insert!.run(r.scope, r.id, new Float32Array(emb));
+          result.embedded++;
+        } catch {
+          // A vector appeared for this id since the scan (another writer): keep it.
+        }
+      });
+    })();
+  }
+  return result;
 }
 
 // =============================================================================

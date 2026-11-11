@@ -109,6 +109,12 @@ export const MEMORY_RELEVANCE_MIN_CORPUS = Number(process.env.LOTL_MEMORY_RELEVA
 //   CONFLICT_MERGE_MIN:  an UPDATE merge reply shorter than this is unusable
 //                        (llm mode stores the new memory instead).
 export const MEMORY_DEDUP_COSINE = 0.9;
+// Neighbours the near-duplicate search reads (vec0 k, same scope). It skips
+// compacted rows and orphan vectors, so k must reach past them. vec0 is a
+// brute-force scan: measured 2026-11-11 on random vectors (one scope of 3000
+// x 384d among 5 scopes), k=5 2.6 ms, k=50 3.3 ms, k=100 3.8 ms per lookup
+// incl. one metadata read per neighbour.
+export const MEMORY_DEDUP_NEIGHBOURS = 50;
 export const MEMORY_CONFLICT_MERGE_MIN_CHARS = 11;
 
 // LLM memory extraction (src/memory/extractor.ts). Measured with Gemma 4 E2B in
