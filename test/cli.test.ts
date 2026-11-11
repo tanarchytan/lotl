@@ -1173,6 +1173,86 @@ describe("CLI Memory Commands", () => {
     // Store a memory first
     await runQmd(["memory", "store", "Stats test memory"], { dbPath: localDbPath });
     const { stdout, exitCode } = await runQmd(["memory", "stats"], { dbPath: localDbPath });
+  test("store honors --scope, --category and --importance without leaking them into the text", async () => {
+    const { stdout, exitCode } = await runQmd(
+      ["memory", "store", "Flag parsing probe alpha", "--scope", "flagscope", "--category", "fact", "--importance", "0.8"],
+      { dbPath: localDbPath },
+    );
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("Stored:");
+    const listed = await runQmd(["memory", "recall", "probe alpha", "--scope", "flagscope"], { dbPath: localDbPath });
+    expect(listed.stdout).toContain("[fact]");
+    expect(listed.stdout).toContain("Flag parsing probe alpha");
+    expect(listed.stdout).not.toContain("flagscope Flag");
+    expect(listed.stdout).not.toMatch(/probe alpha --?scope|alpha flagscope|0\.8 /);
+    const other = await runQmd(["memory", "recall", "probe alpha", "--scope", "elsewhere"], { dbPath: localDbPath });
+    expect(other.stdout).toContain("No memories found");
+  });
+
+  test("recall honors --limit", async () => {
+    await runQmd(["memory", "store", "limitprobe one"], { dbPath: localDbPath });
+    await runQmd(["memory", "store", "limitprobe two"], { dbPath: localDbPath });
+    const { stdout, exitCode } = await runQmd(["memory", "recall", "limitprobe", "--limit", "1"], { dbPath: localDbPath });
+    expect(exitCode).toBe(0);
+    expect(stdout.match(/^\s+id: /gm)?.length).toBe(1);
+  });
+
+  test.each(["7", "-0.1", "abc"])("store rejects invalid --importance %s", async (bad) => {
+    const { stderr, exitCode } = await runQmd(["memory", "store", "bad importance", "--importance", bad], { dbPath: localDbPath });
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("--importance");
+  });
+
+  test.each(["0", "-2", "1.5", "abc"])("recall rejects invalid --limit %s", async (bad) => {
+    const { stderr, exitCode } = await runQmd(["memory", "recall", "x", "--limit", bad], { dbPath: localDbPath });
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("--limit");
+  });
+
+  test.each(["0", "-0.2", "1.5", "abc", ""])("recall rejects invalid --min-relevance %s", async (bad) => {
+    const { stderr, exitCode } = await runQmd(["memory", "recall", "x", "--min-relevance", bad], { dbPath: localDbPath });
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("--min-relevance");
+  });
+
+  test("okf recall rejects invalid --min-relevance", async () => {
+    const { stderr, exitCode } = await runQmd(["okf", "recall", "x", "--min-relevance", "2"], { dbPath: localDbPath });
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("--min-relevance");
+  });
+
+  test("recall --min-relevance keeps on-topic memories and drops off-topic and short prompts", async () => {
+    await runQmd(["memory", "store", "Gateprobe borg backup prune removed the one-off archive"], { dbPath: localDbPath });
+    const hit = await runQmd(["memory", "recall", "why did the gateprobe borg backup prune the archive", "--min-relevance", "0.6"], { dbPath: localDbPath });
+    expect(hit.exitCode).toBe(0);
+    expect(hit.stdout).toContain("Gateprobe borg backup");
+    const off = await runQmd(["memory", "recall", "what's the weather like in tokyo next week", "--min-relevance", "0.6"], { dbPath: localDbPath });
+    expect(off.exitCode).toBe(0);
+    expect(off.stdout).toContain("No memories found");
+    const short = await runQmd(["memory", "recall", "send it", "--min-relevance", "0.6"], { dbPath: localDbPath });
+    expect(short.exitCode).toBe(0);
+    expect(short.stdout).toContain("No memories found");
+    const okf = await runQmd(["okf", "recall", "send it", "--min-relevance", "0.6"], { dbPath: localDbPath });
+    expect(okf.exitCode).toBe(0);
+    expect(okf.stdout).toContain("(no matches)");
+  });
+
+  test("store rejects an unknown --category", async () => {
+    const { stderr, exitCode } = await runQmd(["memory", "store", "bad category", "--category", "bogus"], { dbPath: localDbPath });
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("--category");
+  });
+
+  test.each([["whitespace", "   "], ["all private", "<private>only secret</private>"]])(
+    "store of %s text exits 1 with a one-line error, no stack trace",
+    async (_label, text) => {
+      const { stderr, exitCode } = await runQmd(["memory", "store", text], { dbPath: localDbPath });
+      expect(exitCode).toBe(1);
+      expect(stderr).toMatch(/^Error: Memory text (cannot be empty|is empty after redacting)/);
+      expect(stderr).not.toContain("    at ");
+    },
+  );
+
     expect(exitCode).toBe(0);
     expect(stdout).toContain("Total:");
   });

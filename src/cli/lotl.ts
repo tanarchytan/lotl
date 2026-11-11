@@ -111,7 +111,7 @@ import {
 } from "../collections.js";
 import { getEmbeddedQmdSkillContent, getEmbeddedQmdSkillFiles } from "../embedded-skills.js";
 import { getRemoteConfig } from "../remote-config.js";
-import { memoryStore, memoryRecall, memoryForget, memoryStats, memoryVerify, extractAndStore, runDecayPass, importConversation, exportMemories, importMemories, runCleanupPass, runReflectionPass } from "../memory/index.js";
+import { MEMORY_CATEGORIES, type MemoryCategory, memoryStore, memoryRecall, memoryForget, memoryStats, memoryVerify, extractAndStore, runDecayPass, importConversation, exportMemories, importMemories, runCleanupPass, runReflectionPass } from "../memory/index.js";
 
 // Enable production mode - allows using default database path
 // Tests must set INDEX_PATH or use createStore() with explicit path
@@ -1956,6 +1956,38 @@ function parseCLI() {
       full: { type: "boolean" },
       csv: { type: "boolean" },
       md: { type: "boolean" },
+function exitUsage(msg: string): never {
+  console.error(msg);
+  process.exit(1);
+}
+
+function parseMemoryCategory(raw: unknown): MemoryCategory | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw === "string" && (MEMORY_CATEGORIES as readonly string[]).includes(raw)) return raw as MemoryCategory;
+  return exitUsage(`Invalid --category "${String(raw)}": expected one of ${MEMORY_CATEGORIES.join(", ")}`);
+}
+
+function parseMemoryImportance(raw: unknown): number | undefined {
+  if (raw === undefined) return undefined;
+  const n = typeof raw === "string" && raw.trim() !== "" ? Number(raw) : NaN;
+  if (Number.isFinite(n) && n >= 0 && n <= 1) return n;
+  return exitUsage(`Invalid --importance "${String(raw)}": expected a number between 0 and 1`);
+}
+
+function parseMinRelevance(raw: unknown): number | undefined {
+  if (raw === undefined) return undefined;
+  const n = typeof raw === "string" && raw.trim() !== "" ? Number(raw) : NaN;
+  if (Number.isFinite(n) && n > 0 && n <= 1) return n;
+  return exitUsage(`Invalid --min-relevance "${String(raw)}": expected a number greater than 0 and at most 1`);
+}
+
+function parseMemoryLimit(raw: unknown): number {
+  if (raw === undefined) return 10;
+  const n = typeof raw === "string" && /^\d+$/.test(raw.trim()) ? Number(raw) : NaN;
+  if (Number.isInteger(n) && n > 0) return n;
+  return exitUsage(`Invalid --limit "${String(raw)}": expected a positive integer`);
+}
+
       xml: { type: "boolean" },
       files: { type: "boolean" },
       json: { type: "boolean" },
@@ -2014,6 +2046,13 @@ function parseCLI() {
   // Determine output format
   let format: OutputFormat = "cli";
   if (values.csv) format = "csv";
+      // memory store/recall options. `n` doubles as the recall limit; `--limit` is the long form.
+      // `vault` has its own --scope parser but gets it from the same positional list, unchanged.
+      scope: { type: "string" },
+      category: { type: "string" },
+      importance: { type: "string" },
+      limit: { type: "string" },
+      "min-relevance": { type: "string" },  // memory/okf recall relevance gate, (0, 1]
   else if (values.md) format = "md";
   else if (values.xml) format = "xml";
   else if (values.files) format = "files";
@@ -2596,15 +2635,29 @@ if (isMain) {
 
       if (subCmd === "store" || subCmd === "add") {
         const text = cli.args.slice(1).join(" ");
-        if (!text) { console.error("Usage: lotl memory store <text>"); process.exit(1); }
+        if (!text) { console.error("Usage: lotl memory store <text> [--scope S] [--category C] [--importance 0..1]"); process.exit(1); }
         // Typed at the terminal by the user, so it outranks anything the
         // extractor inferred when the two disagree (OKF §5.3 trust tiers).
-        const result = await memoryStore(db, { text, actor: "human:cli" });
+        const category = parseMemoryCategory(cli.values.category);
+        const importance = parseMemoryImportance(cli.values.importance);
+        const scope = cli.values.scope ? String(cli.values.scope) : undefined;
+        let result: Awaited<ReturnType<typeof memoryStore>>;
+        try {
+          result = await memoryStore(db, { text, actor: "human:cli", scope, category, importance });
+        } catch (err) {
+          // Empty or all-<private> text: a one-line message, not a stack trace.
+          console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+          closeDb();
+          process.exit(1);
+        }
         console.log(result.status === "created" ? `Stored: ${result.id}` : `Duplicate: ${result.duplicate_id}`);
       } else if (subCmd === "recall" || subCmd === "search") {
         const query = cli.args.slice(1).join(" ");
-        if (!query) { console.error("Usage: lotl memory recall <query>"); process.exit(1); }
-        const results = await memoryRecall(db, { query, limit: 10 });
+        if (!query) { console.error("Usage: lotl memory recall <query> [--scope S] [--limit N] [--min-relevance R]"); process.exit(1); }
+        const limit = parseMemoryLimit(cli.values.limit ?? cli.values.n);
+        const scope = cli.values.scope ? String(cli.values.scope) : undefined;
+        const minRelevance = parseMinRelevance(cli.values["min-relevance"]);
+        const results = await memoryRecall(db, minRelevance === undefined ? { query, limit, scope } : { query, limit, scope, minRelevance });
         if (results.length === 0) { console.log("No memories found."); }
         else {
           for (const r of results) {
@@ -2744,8 +2797,9 @@ if (isMain) {
         const { okfRecall } = await import("../okf/recall.js");
         const { renderRefs } = await import("../okf/index-render.js");
         const query = cli.args[1];
-        if (!query) { console.error("Usage: lotl okf recall <query>"); closeDb(); process.exit(1); }
-        const refs = await okfRecall({ db: getDb(), searchFTS: () => [] }, query);
+        if (!query) { console.error("Usage: lotl okf recall <query> [--min-relevance R]"); closeDb(); process.exit(1); }
+        const minRelevance = parseMinRelevance(cli.values["min-relevance"]);
+        const refs = await okfRecall({ db: getDb(), searchFTS: () => [] }, query, minRelevance === undefined ? {} : { minRelevance });
         console.log(refs.length ? renderRefs(refs) : "(no matches)");
         closeDb();
       } else {

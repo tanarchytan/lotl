@@ -384,7 +384,9 @@ lotl multi-get "journals/2026-*.md" -l 40  # Batch by glob
 lotl memory store "I prefer TypeScript"    # Store (auto-classify)
 lotl memory recall "what language"         # Search memories
 lotl memory extract "conversation text"    # Extract from conversation
+lotl memory store "x" --scope proj --category fact --importance 0.8  # Explicit scope/category/importance
 lotl memory stats                          # Stats by tier/category
+lotl memory recall "x" --scope proj --limit 5  # Scoped, capped
 lotl memory decay                          # Run decay pass
 lotl memory import conversations.json      # Import conversations
 lotl memory export memories.json           # Export all memories

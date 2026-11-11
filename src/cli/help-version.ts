@@ -30,6 +30,12 @@ export function showHelp(): void {
   console.log("  lotl mcp                       - Start the MCP server (stdio transport for AI agents)");
   console.log("  lotl bench <fixture.json>      - Run search quality benchmarks against a fixture file");
   console.log("  lotl okf index|get|recall      - Browse indexed concepts (OKF progressive-disclosure)");
+  console.log("  lotl memory store <text> [--scope S] [--category C] [--importance 0..1]");
+  console.log("                                 - Store a memory (category: preference|fact|decision|entity|reflection|other)");
+  console.log("  lotl memory recall <query> [--scope S] [--limit N] [--min-relevance R]");
+  console.log("                                 - Recall memories (default limit 10)");
+  console.log("                                   --min-relevance R (0 < R <= 1, suggested 0.6) drops memories that");
+  console.log("                                   do not cover enough of the query; also on `okf recall`. Off by default.");
   console.log("");
   console.log("Collections & context:");
   console.log("  lotl collection add/list/remove/rename/show   - Manage indexed folders");

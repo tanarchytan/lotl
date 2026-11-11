@@ -189,8 +189,8 @@ lotl cleanup                           # Remove inactive docs + orphaned content
 lotl vacuum                            # Reclaim space
 lotl skill show                        # Show embedded skill
 lotl skill install [--global] [--yes]  # Install skill files
-lotl memory store <text>               # Store memory
-lotl memory recall <query>             # Search memories
+lotl memory store <text> [--scope S] [--category C] [--importance 0..1]  # Store memory
+lotl memory recall <query> [--scope S] [--limit N] [--min-relevance R]  # Search memories (default limit 10; R in (0,1] gates off-topic hits, hook uses 0.6)
 lotl memory forget <id>                # Delete memory
 lotl memory extract <text>             # Extract from conversation
 lotl memory stats                      # Memory stats
@@ -201,7 +201,7 @@ lotl memory export [file.json]         # Export memories
 lotl memory compact [--apply]          # Compact over-budget memories (dry-run default)
 lotl okf index [group]                 # List OKF concept groups or drill into one
 lotl okf get <id>                      # Get one OKF concept by id
-lotl okf recall <query>                # Search memories + docs, returns index lines
+lotl okf recall <query> [--min-relevance R]  # Search memories + docs, returns index lines (R gates memory rows only)
 ```
 
 ## MCP Tools
