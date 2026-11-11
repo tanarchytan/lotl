@@ -1,6 +1,6 @@
 {
   "name": "@tanarchy/lotl",
-  "version": "1.2.0-alpha.1",
+  "version": "1.2.0-alpha.2",
   "description": "Lotl — Living-off-the-Land memory for AI agents. BM25 + vector RRF fusion + LLM rerank + temporal knowledge graph, on top of SQLite-vec and local ONNX. No infra, no LLM required.",
   "type": "module",
   "main": "dist/index.js",
@@ -44,9 +44,8 @@
     "access": "public"
   },
   "overrides": {
-    "hono": "^4.12.21",
-    "@hono/node-server": "^1.19.13",
-    "vite": "^7.3.2"
+    "hono": "^4.13.17",
+    "vite": "^8.3.7"
   },
   "repository": {
     "type": "git",
@@ -57,15 +56,15 @@
     "url": "https://github.com/tanarchytan/lotl/issues"
   },
   "dependencies": {
-    "@huggingface/transformers": "^4.2.0",
-    "@modelcontextprotocol/sdk": "1.29.0",
-    "better-sqlite3": "^12.10.0",
+    "@huggingface/transformers": "^4.3.2",
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "better-sqlite3": "^13.0.3",
     "fast-glob": "3.3.3",
-    "picomatch": "4.0.4",
+    "picomatch": "4.0.7",
     "sqlite-vec": "0.1.9",
-    "web-tree-sitter": "^0.26.9",
-    "yaml": "^2.9.0",
-    "zod": "^4.4.3"
+    "web-tree-sitter": "^0.27.2",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.7"
   },
   "optionalDependencies": {
     "sqlite-vec-darwin-arm64": "0.1.9",
@@ -73,19 +72,20 @@
     "sqlite-vec-linux-arm64": "0.1.9",
     "sqlite-vec-linux-x64": "0.1.9",
     "sqlite-vec-windows-x64": "0.1.9",
-    "tree-sitter-go": "0.23.4",
-    "tree-sitter-python": "0.23.4",
+    "tree-sitter-go": "0.25.0",
+    "tree-sitter-python": "0.25.0",
     "tree-sitter-rust": "0.24.0",
     "tree-sitter-typescript": "0.23.2"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "7.6.13",
-    "@types/node": "^22.19.20",
+    "@types/better-sqlite3": "9.6.0",
+    "@types/node": "^26.6.6",
     "@types/picomatch": "^4.0.3",
-    "@vitest/coverage-v8": "^3.2.6",
-    "tsx": "4.21.0",
-    "undici": "8.1.0",
-    "vitest": "^3.2.6"
+    "@vitest/coverage-v8": "^5.1.0",
+    "tsx": "4.23.15",
+    "typescript": "^7.0.2",
+    "undici": "8.12.4",
+    "vitest": "^5.1.0"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
@@ -100,7 +100,7 @@
   },
   "peerDependencies": {
     "openclaw": ">=2026.4.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3 || ^7.0.2"
   },
   "peerDependenciesMeta": {
     "openclaw": {
