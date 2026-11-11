@@ -191,6 +191,25 @@ LOTL_RERANK_MODEL=zerank-2
 # LOTL_QUERY_EXPANSION_MODEL=zai-org/GLM-4.5-Air
 ```
 
+The `LOTL_QUERY_EXPANSION_*` provider is also lotl's chat LLM for memory
+extraction (`memory_extract`, the Stop hook), near-duplicate conflict
+resolution on every store, `memory_reflect` and the reflection pass. Three
+switches shape that write path:
+```bash
+LOTL_MEMORY_CONFLICT=guarded   # llm (default) | guarded | off
+LOTL_EXTRACT_PROMPT=auto       # conversation (default) | notes | auto
+# LOTL_EXTRACT_CHUNK_CHARS=2500  # notes prompt: split long notes, 0 = never
+LOTL_QUERY_EXPANSION=off       # keep the chat LLM, skip LLM query expansion
+```
+- `LOTL_MEMORY_CONFLICT`: `llm` lets the model rewrite (UPDATE) or delete
+  (DELETE) an existing memory. `guarded` never does; it only decides whether
+  the new memory is a pure restatement (all its words already in the old one,
+  no "not" lost), also when the call fails. `off` skips the model. Use
+  `guarded` (or `off`) with small local models. Unknown values warn and use
+  `guarded`.
+- `LOTL_EXTRACT_PROMPT`: `notes` is written for agent session notes and
+  summaries, `conversation` for chat transcripts, `auto` picks per input.
+
 See `.env.example` in the package for all options.
 
 ### Global vs per-project (MCP)

@@ -115,6 +115,17 @@ export function createRemoteConfigFromEnv(): RemoteLLMConfig | null {
 let _remoteConfig: RemoteLLMConfig | null | undefined;
 let _remoteLLM: RemoteLLM | null | undefined;
 
+/**
+ * LOTL_QUERY_EXPANSION=off: no LLM query expansion (document search and
+ * memory recall), while the LOTL_QUERY_EXPANSION_* provider stays the chat
+ * LLM for extraction, conflict resolution and reflect. For small local
+ * models whose expansions only echo the query
+ * (devnotes/metrics/local-llm-e2b-2026-11-11.md). Read on every call.
+ */
+export function queryExpansionEnabled(): boolean {
+  return (process.env.LOTL_QUERY_EXPANSION ?? "").trim().toLowerCase() !== "off";
+}
+
 export function getRemoteConfig(): RemoteLLMConfig | null {
   if (_remoteConfig !== undefined) return _remoteConfig;
   _remoteConfig = createRemoteConfigFromEnv();

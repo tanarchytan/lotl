@@ -99,11 +99,12 @@ Use `/release <version>` to cut a release. Add changelog entries under `## [Unre
 
 ### Memory system (`src/memory/`)
 
-- **`index.ts`** — Memory store: FTS5 + sqlite-vec hybrid search, content-hash dedup + cosine dedup (≥0.9), LLM conflict resolution (ADD/UPDATE/DELETE/NONE via chatComplete), LRU embedding cache.
+- **`index.ts`** — Memory store: FTS5 + sqlite-vec hybrid search, content-hash dedup + cosine dedup (≥0.9, same scope), LLM conflict resolution (ADD/UPDATE/DELETE/NONE via chatComplete, mode `LOTL_MEMORY_CONFLICT`), LRU embedding cache.
+- **`conflict.ts`** — Conflict prompts, `conflictMode()`, and the `guarded` rule (`guardConflict`, `coveredBy`): never delete or rewrite an existing memory; drop the new one only when its word tokens are a subset of the existing text and no negation is lost.
 - **`decay.ts`** — Weibull decay engine: `composite = 0.4×recency + 0.3×frequency + 0.3×intrinsic`. Three-tier promotion (peripheral → working → core).
 - **`knowledge.ts`** — Temporal knowledge graph: subject/predicate/object triples with `valid_from`/`valid_until` windows. Scope-aware.
 - **`patterns.ts`** — 16 regex patterns for zero-LLM memory classification.
-- **`extractor.ts`** — LLM-based memory extraction via chatComplete, with heuristic fallback. Uses dynamic import to break circular dependency.
+- **`extractor.ts`** — LLM-based memory extraction via chatComplete, with heuristic fallback. Two prompts (`LOTL_EXTRACT_PROMPT=conversation|notes|auto`, default conversation); notes are extracted in parts (`LOTL_EXTRACT_CHUNK_CHARS`, max 8 calls, failed parts go to the heuristic). Uses dynamic import to break circular dependency.
 - **`import.ts`** — Conversation normalization (Claude JSON, ChatGPT JSON, JSONL, plain text) + import/export.
 
 ### OpenClaw plugin (`src/openclaw/`)
@@ -150,6 +151,11 @@ Key env vars:
 - `LOTL_RECALL_RAW=on` — skip all post-fusion boosts (for eval baselines)
 - `LOTL_MEMORY_EXPAND=keywords|entities` — zero-LLM query expansion (default off)
 - `LOTL_MEMORY_RRF_W_BM25` / `LOTL_MEMORY_RRF_W_VEC` — override the hardcoded 0.9/0.1 RRF fusion weights (Phase 2 sweep)
+- `LOTL_MEMORY_CONFLICT=llm|guarded|off` — near-duplicate conflict resolution in `memoryStore` (default `llm`; unknown value warns, uses `guarded`). Set `guarded` or `off` before pointing `LOTL_QUERY_EXPANSION_*` at a small local model.
+- `LOTL_QUERY_EXPANSION=off` — no LLM query expansion (search and memory recall); the provider stays on for extraction, conflict resolution and reflect
+- `LOTL_EXTRACT_PROMPT=conversation|notes|auto` — LLM extraction prompt (default `conversation`); `LOTL_EXTRACT_CHUNK_CHARS` (default 2500, 0 = no split) for the notes prompt
+
+The `LOTL_QUERY_EXPANSION_*` provider is lotl's only chat LLM: query expansion, extraction, conflict resolution, `memory_reflect` and the reflection pass all use it. Gemma 4 E2B measurements and the per-operation verdict: `devnotes/metrics/local-llm-e2b-2026-11-11.md`; harness in `evaluate/local-llm/` (loopback only).
 
 Memory recall tunables are in `src/store/constants.ts`, validated at n=500 LME 2026-04-16. Most are hardcoded; BM25/vec fusion weights and a handful of tunables read env overrides so sweeps work without a recompile.
 

@@ -7,7 +7,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import type { Database } from "../db.js";
-import { getRemoteConfig, getRemoteLLM } from "../remote-config.js";
+import { getRemoteConfig, getRemoteLLM, queryExpansionEnabled } from "../remote-config.js";
 // LlamaCpp removed in 2026-04-13 cleanup — local embed is now via
 // TransformersEmbedBackend (loaded via getLocalEmbedBackend below — named for
 // the LOCAL embed backend, post-2026-04-13 fastembed removal).
@@ -19,7 +19,9 @@ import { isOverBudget, compactMemoryText, BODY_MAX } from "../okf/budget.js";
 import { DEFAULT_ACTOR } from "../okf/concept.js";
 import { redactPrivate } from "./redact.js";
 import { memoryRowHash, metadataOriginal } from "./hash.js";
+import { resolveConflict, guardConflict, conflictMode, type ConflictDecision } from "./conflict.js";
 import {
+  MEMORY_DEDUP_COSINE,
   STRONG_SIGNAL_MIN_SCORE, STRONG_SIGNAL_MIN_GAP,
   MEMORY_FTS_OVERFETCH, MEMORY_VEC_K_MULTIPLIER,
   MEMORY_RERANK_BLEND_ORIGINAL, MEMORY_RERANK_BLEND_RERANK,
@@ -618,6 +620,60 @@ function findSimilarMemory(db: Database, embedding: number[], scope: string, thr
   return null;
 }
 
+/**
+ * What memoryStore does with a near-duplicate (cosine >= MEMORY_DEDUP_COSINE,
+ * same scope), by LOTL_MEMORY_CONFLICT (src/memory/conflict.ts):
+ *   off      duplicate.
+ *   llm      no remote provider: duplicate. Otherwise the LLM (Mem0 pattern)
+ *            decides ADD (insert), UPDATE (existing row rewritten: "merged"),
+ *            DELETE (existing row removed, then insert) or NONE / unparsed /
+ *            failed (duplicate). Unchanged from before the modes existed.
+ *   guarded  never deletes or rewrites the existing row; the new memory is a
+ *            duplicate only when guardConflict() says so, also when the call
+ *            fails, throws or there is no chat provider.
+ */
+async function resolveNearDuplicate(db: Database, existingId: string, text: string, now: number): Promise<"insert" | "duplicate" | "merged"> {
+  const mode = conflictMode();
+  if (mode === "off") return "duplicate";
+  let remote: ReturnType<typeof getRemoteLLM> = null;
+  try { remote = getRemoteLLM(); } catch { if (mode === "llm") return "duplicate"; }
+  if (!remote && mode === "llm") return "duplicate";
+  const existing = db.prepare(`SELECT text, metadata FROM memories WHERE id = ?`).get(existingId) as { text: string; metadata: string | null } | null;
+  if (!existing) return "insert";
+
+  let decision: ConflictDecision;
+  try {
+    decision = remote
+      ? await resolveConflict(existing.text, text, (p) => remote.chatComplete(p), { merge: mode === "llm" })
+      : { action: null, raw: null };
+  } catch {
+    if (mode === "llm") return "duplicate";
+    decision = { action: null, raw: null };
+  }
+
+  if (mode === "guarded") {
+    return guardConflict(decision, existing.text, text).action === "NONE" ? "duplicate" : "insert";
+  }
+
+  try {
+    if (decision.action === "UPDATE") {
+      if (!decision.merged) return "insert";
+      db.prepare(`UPDATE memories SET text = ?, content_hash = ?, last_accessed = ? WHERE id = ?`).run(decision.merged, memoryRowHash(decision.merged, existing.metadata), now, existingId);
+      db.prepare(`INSERT INTO memory_history (memory_id, action, old_value, new_value, timestamp) VALUES (?, 'UPDATE', ?, ?, ?)`).run(existingId, existing.text, decision.merged, now);
+      return "merged";
+    }
+    if (decision.action === "DELETE") {
+      db.prepare(`INSERT INTO memory_history (memory_id, action, old_value, timestamp) VALUES (?, 'DELETE', ?, ?)`).run(existingId, existing.text, now);
+      db.prepare(`DELETE FROM memories WHERE id = ?`).run(existingId);
+      try { db.prepare(`DELETE FROM memories_vec WHERE id = ?`).run(existingId); } catch {}
+      return "insert";
+    }
+    return decision.action === "ADD" ? "insert" : "duplicate";
+  } catch {
+    return "duplicate";
+  }
+}
+
 // =============================================================================
 // Memory CRUD
 // =============================================================================
@@ -687,48 +743,13 @@ export async function memoryStore(
   // (see the invariant above), so the LLM conflict resolution below always
   // compares and merges full texts.
   if (embedding && !compacted) {
-    const similar = findSimilarMemory(db, embedding, scope, 0.9);
+    const similar = findSimilarMemory(db, embedding, scope, MEMORY_DEDUP_COSINE);
     if (similar) {
-      // Try LLM conflict resolution if available (from Mem0 pattern)
-      try {
-        const { getRemoteLLM } = await import("./index.js").then(() => import("../remote-config.js"));
-        const remote = getRemoteLLM();
-        if (remote) {
-          const existingMem = db.prepare(`SELECT text, metadata FROM memories WHERE id = ?`).get(similar.id) as { text: string; metadata: string | null } | null;
-          if (existingMem) {
-            const prompt = `Compare these two memory statements and decide the action:\n\nExisting: "${existingMem.text}"\nNew: "${text}"\n\nRespond with exactly one word: ADD (new fact), UPDATE (merge into existing), DELETE (contradicts existing), or NONE (duplicate).`;
-            const decision = await remote.chatComplete(prompt);
-            const action = decision?.trim().toUpperCase();
-            if (action === "UPDATE") {
-              const merged = await remote.chatComplete(`Merge these into one concise statement:\n1. "${existingMem.text}"\n2. "${text}"\n\nRespond with only the merged statement.`);
-              if (merged && merged.length > 10) {
-                db.prepare(`UPDATE memories SET text = ?, content_hash = ?, last_accessed = ? WHERE id = ?`).run(merged.trim(), memoryRowHash(merged.trim(), existingMem.metadata), now, similar.id);
-                db.prepare(`INSERT INTO memory_history (memory_id, action, old_value, new_value, timestamp) VALUES (?, 'UPDATE', ?, ?, ?)`).run(similar.id, existingMem.text, merged.trim(), now);
-                return { id: similar.id, status: "duplicate", duplicate_id: similar.id };
-              }
-            } else if (action === "DELETE") {
-              db.prepare(`INSERT INTO memory_history (memory_id, action, old_value, timestamp) VALUES (?, 'DELETE', ?, ?)`).run(similar.id, existingMem.text, now);
-              db.prepare(`DELETE FROM memories WHERE id = ?`).run(similar.id);
-              try { db.prepare(`DELETE FROM memories_vec WHERE id = ?`).run(similar.id); } catch {}
-              // Fall through to insert the new memory
-            } else if (action === "ADD") {
-              // Fall through to insert as new memory
-            } else {
-              // NONE or unrecognized — treat as duplicate
-              db.prepare(`UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?`).run(now, similar.id);
-              return { id: similar.id, status: "duplicate", duplicate_id: similar.id };
-            }
-          }
-        } else {
-          // No LLM — fall back to cosine threshold
-          db.prepare(`UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?`).run(now, similar.id);
-          return { id: similar.id, status: "duplicate", duplicate_id: similar.id };
-        }
-      } catch {
-        // LLM conflict resolution failed — fall back to cosine threshold
+      const outcome = await resolveNearDuplicate(db, similar.id, text, now);
+      if (outcome === "duplicate") {
         db.prepare(`UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?`).run(now, similar.id);
-        return { id: similar.id, status: "duplicate", duplicate_id: similar.id };
       }
+      if (outcome !== "insert") return { id: similar.id, status: "duplicate", duplicate_id: similar.id };
     }
   }
 
@@ -1353,7 +1374,7 @@ export async function memoryRecall(
 
     // Query expansion only when no strong FTS signal (saves API call + reduces noise)
     // Skipped entirely in RAW mode.
-    if (!RAW && !hasStrongSignal && options.rerank !== false) {
+    if (!RAW && !hasStrongSignal && options.rerank !== false && queryExpansionEnabled()) {
       try {
         const remoteConfig = getRemoteConfig();
         if (remoteConfig?.queryExpansion) {

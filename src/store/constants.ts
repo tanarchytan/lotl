@@ -102,6 +102,33 @@ export const MEMORY_RELEVANCE_MIN_SPECIFICITY = Number(process.env.LOTL_MEMORY_R
 export const MEMORY_RELEVANCE_PHRASE_CREDIT = Number(process.env.LOTL_MEMORY_RELEVANCE_PHRASE_CREDIT ?? 2.5);
 export const MEMORY_RELEVANCE_MIN_CORPUS = Number(process.env.LOTL_MEMORY_RELEVANCE_MIN_CORPUS ?? 100);
 
+// Memory write path: near-duplicate dedup and LLM conflict resolution
+// (src/memory/index.ts memoryStore, src/memory/conflict.ts).
+//   DEDUP_COSINE:        a new memory this similar to an existing one (same
+//                        scope) goes to conflict resolution instead of a plain insert.
+//   CONFLICT_MERGE_MIN:  an UPDATE merge reply shorter than this is unusable
+//                        (llm mode stores the new memory instead).
+export const MEMORY_DEDUP_COSINE = 0.9;
+export const MEMORY_CONFLICT_MERGE_MIN_CHARS = 11;
+
+// LLM memory extraction (src/memory/extractor.ts). Measured with Gemma 4 E2B in
+// devnotes/metrics/local-llm-e2b-2026-11-11.md.
+//   CHUNK_CHARS:        notes longer than this are extracted in parts
+//                       (LOTL_EXTRACT_CHUNK_CHARS overrides, 0 = one part).
+//   MAX_PARTS:          LLM calls per extraction; text beyond this many parts
+//                       goes to the heuristic extractor instead.
+//   SPEAKER_SHARE:      `auto` style: share of lines with a "Name:" prefix that
+//                       makes the text a transcript.
+//   SPEAKER_LABEL_MAX:  longest "Name" in such a prefix, in chars.
+//   TOPIC_MAX_CHARS:    longest PROJECT/TOPIC label the notes parser accepts.
+//   CONTEXT_TITLE_MAX:  chars of the notes' first line repeated in later parts.
+export const EXTRACT_CHUNK_CHARS = 2500;
+export const EXTRACT_MAX_PARTS = 8;
+export const EXTRACT_SPEAKER_SHARE = 0.5;
+export const EXTRACT_SPEAKER_LABEL_MAX = 40;
+export const EXTRACT_TOPIC_MAX_CHARS = 60;
+export const EXTRACT_CONTEXT_TITLE_MAX = 200;
+
 /** Weight for intent terms relative to query terms (1.0) in snippet scoring */
 export const INTENT_WEIGHT_SNIPPET = 0.3;
 

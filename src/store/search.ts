@@ -9,7 +9,7 @@ import {
   formatDocForEmbedding,
   createTransformersEmbedBackend,
 } from "../llm.js";
-import { getRemoteConfig, getRemoteLLM } from "../remote-config.js";
+import { getRemoteConfig, getRemoteLLM, queryExpansionEnabled } from "../remote-config.js";
 import {
   DEFAULT_EMBED_MODEL,
   DEFAULT_RERANK_MODEL,
@@ -458,6 +458,8 @@ export function insertEmbedding(
 // =============================================================================
 
 export async function expandQuery(query: string, model: string = DEFAULT_QUERY_MODEL, db: Database, intent?: string, llmOverride?: LLM): Promise<ExpandedQuery[]> {
+  // LOTL_QUERY_EXPANSION=off: raw query only, no LLM call and no cached expansion.
+  if (!queryExpansionEnabled()) return [];
   const cacheKey = getCacheKey("expandQuery", { query, model, ...(intent && { intent }) });
   const cached = getCachedResult(db, cacheKey);
   if (cached) {
