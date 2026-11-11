@@ -1729,8 +1729,8 @@ describe("status and collection list hide filesystem paths", () => {
 
     // Should show lotl:// URIs
     expect(stdout).toContain(`lotl://${collName}/`);
-    // Should NOT show full filesystem paths (except for the index location which is ok)
-    const lines = stdout.split('\n').filter(l => !l.includes('Index:'));
+    // Should NOT show full filesystem paths (except the index and config file locations, which are ok)
+    const lines = stdout.split('\n').filter(l => !l.includes('Index:') && !l.includes('Collections from:'));
     const pathLines = lines.filter(l => l.includes('/Users/') || l.includes('/home/') || l.includes('/tmp/'));
     expect(pathLines.length).toBe(0);
   });

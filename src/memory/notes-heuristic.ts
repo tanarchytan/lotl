@@ -38,6 +38,11 @@ const TITLE_GENERIC = new Set([
   "quick", "short", "korte", "from", "today", "vandaag", "daily", "weekly", "of", "the", "a", "an",
   "van", "de", "het", "een", "on", "for", "voor", "and", "en", "my", "our",
 ]);
+// A date inside a first line only makes it a title when the line reads like a label. Articles,
+// pronouns and auxiliaries ("the cache was cleared on ...") mean a sentence.
+const SENTENCE_WORD = /^(the|a|an|we|i|it|they|he|she|you|was|were|is|are|has|have|had|will|did|do|does|to|de|het|een|wij|ik|is|zijn|heeft|hebben|werd|waren)$/i;
+// A word right before the date that makes it an adverbial ("... on 2031-05-10").
+const DATE_PREPOSITION = /\b(on|at|by|since|until|till|from|after|before|during|in|op|om|sinds|vanaf|voor|na)\s+$/i;
 const HEADING = /^#{1,6}\s+(.*)$/;
 const PROJECT_LINE = /^PROJECT:\s*(.+)$/i;
 const ITEM = /^(?:[-*•+]|\d{1,2}[.)])\s+/;
@@ -68,7 +73,13 @@ type NotesTitle = { project: string | null; body: string };
 
 /** Subject named by a title segment, after trimming generic words; null if none. */
 function subjectFromTitle(title: string): string | null {
-  const plain = title.replace(/\([^)]*\)/g, " ").replace(DATE, " ").replace(/^#+\s*/, "");
+  const bare = title.replace(/\([^)]*\)/g, " ").replace(/^#+\s*/, "");
+  // "<project> <date> <more words>": the project is what stands before the date, the rest
+  // ("second pass", "migration follow-up") describes the session. A leading date has no project
+  // before it, so then the text after it is used.
+  const cut = bare.search(new RegExp(DATE.source));
+  const before = cut > 0 ? bare.slice(0, cut).trim() : "";
+  const plain = (before ? before : bare).replace(DATE, " ");
   for (const seg of plain.split(/[,;]|\s[-–—]\s/)) {
     const words = seg.trim().split(/\s+/).filter(Boolean);
     const generic = (w: string) => TITLE_GENERIC.has(w.toLowerCase().replace(/[^\p{L}-]/gu, ""));
@@ -89,7 +100,16 @@ function subjectFromTitle(title: string): string | null {
 function isTitle(head: string): boolean {
   const words = head.replace(/\([^)]*\)/g, " ").replace(DATE, " ").split(/[\s,]+/).filter(Boolean);
   if (words.length > EXTRACT_HEUR_TITLE_WORDS || CONTENT_START.test(head)) return false;
-  return NOTES_WORD.test(head) || CLOSING_DATE.test(head);
+  if (NOTES_WORD.test(head) || CLOSING_DATE.test(head)) return true;
+  return hasLabelDate(head, words);
+}
+
+/** "harbor 2031-05-10 second pass": a date amid a few label-like words, not a sentence. */
+function hasLabelDate(head: string, words: string[]): boolean {
+  const m = new RegExp(DATE.source).exec(head);
+  if (!m) return false;
+  if (DATE_PREPOSITION.test(head.slice(0, m.index))) return false;
+  return !words.some(w => SENTENCE_WORD.test(w));
 }
 
 /** Split off a title line: "PROJECT: x", a first-line heading, or a dated / "session"-style first sentence. */

@@ -144,6 +144,27 @@ describe("notes heuristic: subjects", () => {
     expect(worded).toEqual(["The session cache of quarry now expires after 10 minutes."]);
   });
 
+  test("a short first line with a date in the middle is a title: its project is the subject", async () => {
+    const mems = await extract("harbor 2031-05-10 second pass and cleanup. The retry limit is 5 attempts. The queue drains at 250 jobs per minute.");
+    expect(mems.length).toBeGreaterThan(0);
+    for (const m of mems) expect(m).toMatch(/^harbor/);
+    expect(mems.some(m => /second pass|cleanup/.test(m))).toBe(false);
+    const nl = await extract("Orchard 2031-05-11 migration follow-up\nThe importer now skips files above 2 GB.");
+    expect(nl).toEqual(["Orchard: The importer now skips files above 2 GB."]);
+  });
+
+  test("an ordinary first sentence with a date in it is still content, not a title", async () => {
+    for (const first of [
+      "Moved the harbor cache to /srv/cache on 2031-05-10 after the outage.",
+      "We rebuilt the harbor index on 2031-05-10 and it took 40 minutes.",
+      "The harbor cache was cleared on 2031-05-10 because it filled the disk.",
+      "Rolled back the harbor release at 2031-05-10 after errors appeared in logs.",
+    ]) {
+      const mems = await extract(first);
+      expect(mems.join(" ")).toContain(first.slice(0, 20));
+    }
+  });
+
   test("without a title the most named entity is the subject", async () => {
     const text = "Quick note. Mira wants weekly reports in CSV, not XLSX. Reports go to /srv/reports/weekly. Mira reviews them on Monday at 09:00.";
     const mems = await extract(text);

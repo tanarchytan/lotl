@@ -47,6 +47,9 @@ const FTS_ONLY_ENV = {
   LOTL_ONNX: "off",
   LOTL_EMBED_BACKEND: "off",
   LOTL_MEMORY_RERANK: "off",
+  // Read-only recall: no access_count bump, so no FTS rewrite and no WAL write
+  // (which would release the PreCompact gate with nothing saved).
+  LOTL_RECALL_NO_TOUCH: "on",
 };
 
 const EMPTY_RESULT = /no memories|no results|no matches|^usage:/i;

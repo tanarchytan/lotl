@@ -16,8 +16,13 @@
 # Before 2026-09-14 this blocked unconditionally, which made auto-compaction unusable.
 #
 # Save signal: mtime of the lotl SQLite write-ahead log (<index>.sqlite-wal). A real memory write
-# commits and bumps the WAL mtime; read-only recall does not append to it, so it cannot spuriously
-# release the gate.
+# commits and bumps the WAL mtime. Recall must not move it: the hooks run recall with
+# LOTL_RECALL_NO_TOUCH=on, because a normal recall bumps access_count, and through the
+# memories_au trigger that rewrites the row's FTS entry, which is a WAL write that would
+# release this gate with nothing saved.
+#
+# Portable: works with GNU and BSD (macOS) userland and bash 3.2. Mtime comes from
+# `stat -c %Y` (GNU) or `stat -f %m` (BSD), never `stat -c` alone.
 #
 # See devnotes/precompact-block-until-saved.md for the rationale.
 #
@@ -50,8 +55,11 @@ if [ -z "$TRIGGER" ]; then TRIGGER="manual"; fi
 # recent asks, verbatim, plus the state of both trees. Never allowed to interfere with compaction.
 # Optional: only runs when ~/.claude/hooks/compact_snapshot.py exists.
 SNAPSHOT_SCRIPT="${HOME}/.claude/hooks/compact_snapshot.py"
-if [ -f "$SNAPSHOT_SCRIPT" ]; then
-  printf '%s' "$INPUT" | timeout 25 python "$SNAPSHOT_SCRIPT" >> "$LOG_FILE" 2>&1 \
+PYBIN=$(command -v python3 || command -v python || true)
+# macOS has no `timeout`; coreutils installs it as gtimeout. Without either, run unbounded.
+TMO=$(command -v timeout || command -v gtimeout || true)
+if [ -f "$SNAPSHOT_SCRIPT" ] && [ -n "$PYBIN" ]; then
+  printf '%s' "$INPUT" | ${TMO:+"$TMO" 25} "$PYBIN" "$SNAPSHOT_SCRIPT" >> "$LOG_FILE" 2>&1 \
     || echo "[$(ts)] Session $SESSION_ID: snapshot FAILED (compaction still allowed)" >> "$LOG_FILE"
 fi
 
@@ -59,10 +67,18 @@ fi
 # ${XDG_CACHE_HOME:-~/.cache}/lotl/index.sqlite. Watching a fixed ~/.cache path
 # kept the manual gate shut forever when the index lived elsewhere.
 LOTL_DB="${INDEX_PATH:-${XDG_CACHE_HOME:-${HOME}/.cache}/lotl/index.sqlite}"
+# Print a file's mtime (epoch seconds), or 0. GNU first: on GNU, `stat -f` means
+# "filesystem status" and would print junk, so it must only be the fallback.
+mtime_of() {
+  local m
+  m=$(stat -c %Y "$1" 2>/dev/null) || m=$(stat -f %m "$1" 2>/dev/null) || m=0
+  case "$m" in ''|*[!0-9]*) m=0 ;; esac
+  echo "$m"
+}
 last_write=0
 for f in "${LOTL_DB}-wal" "${LOTL_DB}"; do
   if [ -f "$f" ]; then
-    m=$(stat -c %Y "$f" 2>/dev/null || echo 0)
+    m=$(mtime_of "$f")
     [ "$m" -gt "$last_write" ] && last_write="$m"
   fi
 done

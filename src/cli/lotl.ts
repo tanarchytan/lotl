@@ -108,6 +108,7 @@ import {
   listAllContexts,
   setConfigIndexName,
   loadConfig,
+  getConfigPath,
 } from "../collections.js";
 import { getEmbeddedQmdSkillContent, getEmbeddedQmdSkillFiles } from "../embedded-skills.js";
 import { getRemoteConfig } from "../remote-config.js";
@@ -145,6 +146,16 @@ function checkIndexHealth(db: Database): void {
 
 // formatTimeAgo / formatMs / formatBytes moved to cli/format.ts
 
+/**
+ * With a per-project INDEX_PATH the index is local but the collection list is not: it comes
+ * from the config dir (LOTL_CONFIG_DIR, else $XDG_CONFIG_HOME/lotl, else ~/.config/lotl).
+ * Returns one line naming that file, or undefined when INDEX_PATH is not set.
+ */
+export function configNoticeLine(): string | undefined {
+  if (!process.env.INDEX_PATH) return undefined;
+  return `Collections from: ${getConfigPath()} (config dir: LOTL_CONFIG_DIR, else $XDG_CONFIG_HOME/lotl, else ~/.config/lotl)`;
+}
+
 async function showStatus(): Promise<void> {
   const dbPath = getDbPath();
   const db = getDb();
@@ -179,6 +190,8 @@ async function showStatus(): Promise<void> {
 
   console.log(`${c.bold}Lotl Status${c.reset}  v${version}\n`);
   console.log(`Index: ${dbPath}`);
+  const configNotice = configNoticeLine();
+  if (configNotice) console.log(`${c.dim}${configNotice}${c.reset}`);
   console.log(`Size:  ${formatBytes(indexSize)}`);
 
   // MCP daemon status (check PID file liveness)
@@ -355,6 +368,8 @@ async function showStatus(): Promise<void> {
 async function updateCollections(): Promise<void> {
   const db = getDb();
   const storeInstance = getStore();
+  const configNotice = configNoticeLine();
+  if (configNotice) console.log(`${c.dim}${configNotice}${c.reset}`);
   // Collections are defined in YAML; no duplicate cleanup needed.
 
   // Clear Ollama cache on update
@@ -1308,7 +1323,7 @@ type OutputOptions = {
   format: OutputFormat;
   full: boolean;
   limit: number;
-  minScore: number;
+  minScore?: number;  // undefined = not given; each command applies its own default with ??
   all?: boolean;
   collection?: string | string[];  // Filter by collection name(s)
   lineNumbers?: boolean; // Add line numbers to output
@@ -1438,7 +1453,7 @@ export function termLink(text: string, url: string, isTTY: boolean = !!process.s
 }
 
 function outputResults(results: OutputRow[], query: string, opts: OutputOptions): void {
-  const filtered = results.filter(r => r.score >= opts.minScore).slice(0, opts.limit);
+  const filtered = results.filter(r => r.score >= (opts.minScore ?? 0)).slice(0, opts.limit);
 
   if (filtered.length === 0) {
     printEmptySearchResults(opts.format, "min_score");
@@ -1784,7 +1799,7 @@ async function vectorSearch(query: string, opts: OutputOptions, _model: string =
   let results = await vectorSearchQuery(store, query, {
     collection: singleCollection,
     limit: opts.all ? 500 : (opts.limit || 10),
-    minScore: opts.minScore || 0.3,
+    minScore: resolveVsearchMinScore(opts.minScore),
     intent: opts.intent,
     hooks: {
       onExpand: (original, expanded) => {
@@ -1857,7 +1872,7 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
     results = await structuredSearch(store, structuredQueries, {
       collections: singleCollection ? [singleCollection] : undefined,
       limit: opts.all ? 500 : (opts.limit || 10),
-      minScore: opts.minScore || 0,
+      minScore: opts.minScore ?? 0,
       candidateLimit: opts.candidateLimit,
       skipRerank: opts.skipRerank,
       explain: !!opts.explain,
@@ -1885,7 +1900,7 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
     results = await hybridQuery(store, query, {
       collection: singleCollection,
       limit: opts.all ? 500 : (opts.limit || 10),
-      minScore: opts.minScore || 0,
+      minScore: opts.minScore ?? 0,
       candidateLimit: opts.candidateLimit,
       skipRerank: opts.skipRerank,
       explain: !!opts.explain,
@@ -1981,6 +1996,61 @@ function parseMinRelevance(raw: unknown): number | undefined {
   return exitUsage(`Invalid --min-relevance "${String(raw)}": expected a number greater than 0 and at most 1`);
 }
 
+/** vsearch drops weak vector matches by default; an explicit `--min-score 0` turns that off. */
+export const VSEARCH_DEFAULT_MIN_SCORE = 0.3;
+
+/** Only an absent min-score gets the default. `||` here made an explicit 0 become 0.3. */
+export function resolveVsearchMinScore(minScore: number | undefined): number {
+  return minScore ?? VSEARCH_DEFAULT_MIN_SCORE;
+}
+
+/**
+ * Numeric search options from parsed flags. `minScore` and `candidateLimit` stay undefined when
+ * absent so callers pick their own default; an explicit 0 is kept.
+ */
+export function parseSearchNumbers(
+  values: Record<string, unknown>,
+  defaultLimit: number,
+): { limit: number; minScore: number | undefined; candidateLimit: number | undefined } {
+  const rawN = values.n;
+  const parsedN = rawN === undefined ? NaN : parseInt(String(rawN), 10);
+  const limit = Number.isInteger(parsedN) && parsedN > 0 ? parsedN : defaultLimit;
+
+  let minScore: number | undefined;
+  const rawScore = values["min-score"];
+  if (rawScore !== undefined) {
+    const n = typeof rawScore === "string" && rawScore.trim() !== "" ? Number(rawScore) : NaN;
+    if (!Number.isFinite(n)) return exitUsage(`Invalid --min-score "${String(rawScore)}": expected a number`);
+    minScore = n;
+  }
+
+  const rawCand = values["candidate-limit"];
+  const parsedCand = rawCand === undefined ? NaN : parseInt(String(rawCand), 10);
+  const candidateLimit = Number.isInteger(parsedCand) ? parsedCand : undefined;
+
+  return { limit, minScore, candidateLimit };
+}
+
+/** How many low-confidence ids `memory compact` shows before it falls back to a count. */
+export const COMPACT_REVIEW_SAMPLE = 10;
+
+/**
+ * Output lines for the compact review list. A full run can flag thousands of ids (131 KB on one
+ * line), so the default is a count and a bounded sample; `listAll` prints every id, one per line,
+ * for scripts.
+ */
+export function formatCompactReview(review: string[], listAll: boolean): string[] {
+  if (listAll) return [...review];
+  if (review.length === 0) return [];
+  if (review.length <= COMPACT_REVIEW_SAMPLE) {
+    return [`Review (low-confidence, not applied): ${review.length}. ${review.join(", ")}`];
+  }
+  return [
+    `Review (low-confidence, not applied): ${review.length}. First ${COMPACT_REVIEW_SAMPLE}: ${review.slice(0, COMPACT_REVIEW_SAMPLE).join(", ")}`,
+    "Use --list-ids to print every id, one per line.",
+  ];
+}
+
 function parseMemoryLimit(raw: unknown): number {
   if (raw === undefined) return 10;
   const n = typeof raw === "string" && /^\d+$/.test(raw.trim()) ? Number(raw) : NaN;
@@ -2047,7 +2117,7 @@ function parseCLI() {
       host: { type: "string" },
       token: { type: "string" },
       // memory store/recall options. `n` doubles as the recall limit; `--limit` is the long form.
-      // `vault` has its own --scope parser but gets it from the same positional list, unchanged.
+      // `vault` reads --scope/--force from cli.values (see the vault case).
       scope: { type: "string" },
       category: { type: "string" },
       importance: { type: "string" },
@@ -2055,6 +2125,7 @@ function parseCLI() {
       "min-relevance": { type: "string" },  // memory/okf recall relevance gate, (0, 1]
       // memory compact options ("force" reused from the embed/skill-install flag above)
       apply: { type: "boolean" },
+      "list-ids": { type: "boolean" },  // memory compact: print every review id, one per line
     },
     allowPositionals: true,
     strict: false, // Allow unknown options to pass through
@@ -2087,15 +2158,17 @@ function parseCLI() {
   const defaultLimit = (format === "files" || format === "json") ? 20 : 5;
   const isAll = !!values.all;
 
+  const { limit, minScore, candidateLimit } = parseSearchNumbers(values, defaultLimit);
+
   const opts: OutputOptions = {
     format,
     full: !!values.full,
-    limit: isAll ? 100000 : (values.n ? parseInt(String(values.n), 10) || defaultLimit : defaultLimit),
-    minScore: values["min-score"] ? parseFloat(String(values["min-score"])) || 0 : 0,
+    limit: isAll ? 100000 : limit,
+    minScore,
     all: isAll,
     collection: values.collection as string[] | undefined,
     lineNumbers: !!values["line-numbers"],
-    candidateLimit: values["candidate-limit"] ? parseInt(String(values["candidate-limit"]), 10) : undefined,
+    candidateLimit,
     skipRerank: !!values["no-rerank"],
     explain: !!values.explain,
     intent: values.intent as string | undefined,
@@ -2451,10 +2524,6 @@ if (isMain) {
         console.error("Usage: lotl vsearch [options] <query>");
         process.exit(1);
       }
-      // Default min-score for vector search is 0.3
-      if (!cli.values["min-score"]) {
-        cli.opts.minScore = 0.3;
-      }
       await vectorSearch(cli.query, cli.opts);
       break;
 
@@ -2781,9 +2850,12 @@ if (isMain) {
         const force = cli.values.force === true;
         const { compactAllMemories } = await import("../memory/compact.js");
         const r = await compactAllMemories(db, { apply, force });
-        console.log(`Scanned ${r.scanned} over-budget memories; ${apply ? `compacted ${r.compacted}` : `would compact ${r.scanned - r.review.length}`}.`);
-        if (r.review.length) console.log(`Review (low-confidence, not applied): ${r.review.join(", ")}`);
-        if (!apply) console.log("Dry-run. Re-run with --apply to write (originals archived in metadata.original).");
+        const listIds = cli.values["list-ids"] === true;
+        // With --list-ids stdout carries ids only; the summary goes to stderr.
+        const say = listIds ? console.error : console.log;
+        say(`Scanned ${r.scanned} over-budget memories; ${apply ? `compacted ${r.compacted}` : `would compact ${r.scanned - r.review.length}`}.`);
+        for (const line of formatCompactReview(r.review, listIds)) console.log(line);
+        if (!apply) say("Dry-run. Re-run with --apply to write (originals archived in metadata.original).");
       } else {
         console.error("Usage: lotl memory <store|recall|forget|extract|stats|decay|import|export|serve|compact> [args]");
         process.exit(1);
@@ -2834,7 +2906,12 @@ if (isMain) {
     }
 
     case "vault": {
-      const exit = await runVaultCommand(cli.args);
+      // --scope/--force/--help are declared options of the main parser, so they are not in cli.args.
+      const exit = await runVaultCommand(cli.args, {
+        scope: typeof cli.values.scope === "string" ? cli.values.scope : undefined,
+        force: cli.values.force === true ? true : undefined,
+        help: cli.values.help === true ? true : undefined,
+      });
       process.exit(exit);
       break;
     }

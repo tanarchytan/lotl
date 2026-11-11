@@ -15,6 +15,18 @@ interface ParsedArgs {
   sub: string;
   scope?: string;
   force: boolean;
+  help: boolean;
+}
+
+/**
+ * Flags the main dispatcher already parsed. `--scope`, `--force` and `--help` are declared
+ * options there, so util.parseArgs strips them from the positionals and they never appear in
+ * the argv handed to this module.
+ */
+export interface VaultFlags {
+  scope?: string;
+  force?: boolean;
+  help?: boolean;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -32,11 +44,22 @@ function parseArgs(argv: string[]): ParsedArgs {
       scope = arg.slice("--scope=".length);
     }
   }
-  return { sub: sub ?? "", scope, force };
+  return { sub: sub ?? "", scope, force, help: false };
 }
 
-export async function runVaultCommand(argv: string[]): Promise<number> {
-  const args = parseArgs(argv);
+export async function runVaultCommand(argv: string[], flags: VaultFlags = {}): Promise<number> {
+  const parsed = parseArgs(argv);
+  const args: ParsedArgs = {
+    sub: parsed.sub,
+    scope: flags.scope ?? parsed.scope,
+    force: flags.force ?? parsed.force,
+    help: flags.help ?? parsed.help,
+  };
+
+  if (args.help) {
+    printUsage();
+    return 0;
+  }
 
   switch (args.sub) {
     case "export":
@@ -49,7 +72,7 @@ export async function runVaultCommand(argv: string[]): Promise<number> {
       printUsage();
       return 0;
     default:
-      warn(`[vault] unknown subcommand: ${args.sub}`);
+      console.error(warn(`[vault] unknown subcommand: ${args.sub}`));
       printUsage();
       return 2;
   }
@@ -74,7 +97,13 @@ async function runVaultExport(args: ParsedArgs): Promise<number> {
 
   const scopes = Object.keys(summary);
   if (scopes.length === 0) {
-    console.log(warn("[vault:export] no scopes found in KG — nothing to export."));
+    console.log(
+      warn(
+        args.scope
+          ? `[vault:export] scope "${args.scope}" not found in KG — nothing to export.`
+          : "[vault:export] no scopes found in KG — nothing to export.",
+      ),
+    );
     return 0;
   }
 

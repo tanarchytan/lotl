@@ -64,11 +64,29 @@ CWD="$(printf '%s' "$INPUT" | jq -r '.cwd // ""' 2>/dev/null)"
 # Fast keyword recall, hard-bounded. FTS only (no model load). Options go
 # before "--" and the prompt after it, so a prompt that starts with "-" (a
 # markdown bullet, "--help ...") is a query, not a flag.
-FTS_ONLY=(LOTL_ONNX=off LOTL_EMBED_BACKEND=off LOTL_MEMORY_RERANK=off)
-if [ "${LOTL_OKF:-on}" = "off" ]; then
-  RESULTS="$(env "${FTS_ONLY[@]}" timeout "$RECALL_TIMEOUT" "$LOTL_BIN" memory recall ${GATE[@]+"${GATE[@]}"} -- "$PROMPT" 2>/dev/null | head -n "$MAX_LINES")" || emit_nothing
+#
+# Read-only: LOTL_RECALL_NO_TOUCH=on stops memoryRecall from bumping access_count/last_accessed.
+# Without it each recalled row is UPDATEd, the memories_au trigger rewrites its FTS entry, and
+# the resulting WAL write would release the PreCompact gate with nothing saved.
+FTS_ONLY=(LOTL_ONNX=off LOTL_EMBED_BACKEND=off LOTL_MEMORY_RERANK=off LOTL_RECALL_NO_TOUCH=on)
+
+# Bound the call. GNU `timeout`, else coreutils' `gtimeout` (macOS + brew), else perl's alarm
+# (ships with macOS). Stock macOS has no `timeout`; a missing binary here would make every
+# recall fail and inject nothing.
+if command -v timeout >/dev/null 2>&1; then
+  TMO=(timeout "$RECALL_TIMEOUT")
+elif command -v gtimeout >/dev/null 2>&1; then
+  TMO=(gtimeout "$RECALL_TIMEOUT")
+elif command -v perl >/dev/null 2>&1; then
+  TMO=(perl -e 'alarm shift; exec @ARGV or exit 127' "$RECALL_TIMEOUT")
 else
-  RESULTS="$(env "${FTS_ONLY[@]}" timeout "$RECALL_TIMEOUT" "$LOTL_BIN" okf recall ${GATE[@]+"${GATE[@]}"} -- "$PROMPT" 2>/dev/null | head -n "$MAX_LINES")" || emit_nothing
+  TMO=()
+fi
+
+if [ "${LOTL_OKF:-on}" = "off" ]; then
+  RESULTS="$(env "${FTS_ONLY[@]}" ${TMO[@]+"${TMO[@]}"} "$LOTL_BIN" memory recall ${GATE[@]+"${GATE[@]}"} -- "$PROMPT" 2>/dev/null | head -n "$MAX_LINES")" || emit_nothing
+else
+  RESULTS="$(env "${FTS_ONLY[@]}" ${TMO[@]+"${TMO[@]}"} "$LOTL_BIN" okf recall ${GATE[@]+"${GATE[@]}"} -- "$PROMPT" 2>/dev/null | head -n "$MAX_LINES")" || emit_nothing
 fi
 
 # Nothing useful → inject nothing (the gate filtering everything lands here too).

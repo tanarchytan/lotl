@@ -81,6 +81,7 @@ describe("opencode-lotl-memory plugin", () => {
       LOTL_ONNX: "off",
       LOTL_EMBED_BACKEND: "off",
       LOTL_MEMORY_RERANK: "off",
+      LOTL_RECALL_NO_TOUCH: "on",
     });
     expect(output.parts).toHaveLength(2);
     expect(output.parts[0]!.text).toBe("Relevant lotl concepts (open with okf_get):\nmem:abc dedup threshold note");

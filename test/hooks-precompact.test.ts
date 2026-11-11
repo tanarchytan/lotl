@@ -5,7 +5,7 @@
  */
 
 import { describe, test, expect } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, rmSync, existsSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,6 +53,52 @@ describe.skipIf(!hasBash)("lotl_precompact_hook.sh", () => {
       expect(run(home, env, '{"trigger":"manual"}')).toBe("");
       // auto-compaction never blocks
       expect(run(home, env, '{"trigger":"auto"}')).toBe("");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * macOS ships BSD userland: `stat -c` is rejected and the mtime format is `stat -f %m`.
+ * Simulate it with a `stat` earlier in PATH that fails exactly like BSD for -c and
+ * answers `-f %m` from the real GNU stat. (BSD `stat -f %m` on GNU would print filesystem info.)
+ */
+function mkBin(root: string): string {
+  const d = join(root, "bin");
+  mkdirSync(d, { recursive: true });
+  return d;
+}
+
+function bsdStatShim(dir: string): string {
+  const real = spawnSync("bash", ["-c", "command -v stat"], { encoding: "utf8" }).stdout.trim();
+  const shim = join(dir, "stat");
+  writeFileSync(
+    shim,
+    `#!/bin/sh
+case "$1" in
+  -c) echo "stat: illegal option -- c" >&2; echo "usage: stat [-FLnq] [-f format | -l | -r | -s | -x] [-t timefmt] [file ...]" >&2; exit 1 ;;
+  -f) if [ "$2" = "%m" ]; then shift 2; exec ${real} -c %Y "$@"; fi; exit 1 ;;
+esac
+exec ${real} "$@"
+`,
+  );
+  chmodSync(shim, 0o755);
+  return dir;
+}
+
+describe.skipIf(!hasBash)("lotl_precompact_hook.sh under BSD stat", () => {
+  test("manual gate releases after a write when `stat -c` is unavailable", () => {
+    const root = mkdtempSync(join(tmpdir(), "lotl-precompact-bsd-"));
+    try {
+      const home = join(root, "home");
+      mkdirSync(home, { recursive: true });
+      const shimDir = bsdStatShim(mkBin(root));
+      const db = join(root, "proj", "index.sqlite");
+      const env = { INDEX_PATH: db, PATH: `${shimDir}:${process.env.PATH}` };
+      expect(JSON.parse(run(home, env, '{"trigger":"manual"}')).decision).toBe("block");
+      touchDb(db);
+      expect(run(home, env, '{"trigger":"manual"}')).toBe("");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
