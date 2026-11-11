@@ -129,6 +129,24 @@ export const EXTRACT_SPEAKER_LABEL_MAX = 40;
 export const EXTRACT_TOPIC_MAX_CHARS = 60;
 export const EXTRACT_CONTEXT_TITLE_MAX = 200;
 
+// No-LLM notes extraction (src/memory/notes-heuristic.ts). Tuned on the dev
+// split in devnotes/metrics/local-llm-e2b-2026-11-11.md, "Heuristic extraction".
+//   HEUR_MAX_MEMORIES:  memories kept per EXTRACT_CHUNK_CHARS of notes (the
+//                       most informative ones, in note order).
+//   HEUR_PACK_CHARS:    adjacent sentences of one paragraph are joined while
+//                       the memory stays under this.
+//   HEUR_MEMORY_CHARS:  hard cap on one memory before its subject prefix; a
+//                       longer sentence is cut at "; " / ", ".
+//   HEUR_MIN_CHARS:     shorter sentences without a number or identifier
+//                       are dropped ("Done here.").
+//   HEUR_TITLE_WORDS:   most words (dates and brackets left out) a first
+//                       sentence may have to be read as a title line.
+export const EXTRACT_HEUR_MAX_MEMORIES = 16;
+export const EXTRACT_HEUR_PACK_CHARS = 160;
+export const EXTRACT_HEUR_MEMORY_CHARS = 360;
+export const EXTRACT_HEUR_MIN_CHARS = 20;
+export const EXTRACT_HEUR_TITLE_WORDS = 8;
+
 /** Weight for intent terms relative to query terms (1.0) in snippet scoring */
 export const INTENT_WEIGHT_SNIPPET = 0.3;
 

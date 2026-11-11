@@ -104,7 +104,9 @@ Use `/release <version>` to cut a release. Add changelog entries under `## [Unre
 - **`decay.ts`** — Weibull decay engine: `composite = 0.4×recency + 0.3×frequency + 0.3×intrinsic`. Three-tier promotion (peripheral → working → core).
 - **`knowledge.ts`** — Temporal knowledge graph: subject/predicate/object triples with `valid_from`/`valid_until` windows. Scope-aware.
 - **`patterns.ts`** — 16 regex patterns for zero-LLM memory classification.
-- **`extractor.ts`** — LLM-based memory extraction via chatComplete, with heuristic fallback. Two prompts (`LOTL_EXTRACT_PROMPT=conversation|notes|auto`, default conversation); notes are extracted in parts (`LOTL_EXTRACT_CHUNK_CHARS`, max 8 calls, failed parts go to the heuristic). Uses dynamic import to break circular dependency.
+- **`extractor.ts`** — LLM-based memory extraction via chatComplete, with heuristic fallback. Two prompts (`LOTL_EXTRACT_PROMPT=conversation|notes|auto`, default conversation); notes are extracted in parts (`LOTL_EXTRACT_CHUNK_CHARS`, max 8 calls, failed parts go to the heuristic). Uses dynamic import to break circular dependency. The no-LLM heuristic picks by `detectExtractStyle`, whatever `LOTL_EXTRACT_PROMPT` says: transcripts get the old sentence-pattern rule, notes get `notes-heuristic.ts`.
+- **`notes-heuristic.ts`** — No-LLM extraction for session notes: title line gives the subject, headings the topic, lists stay with their lead-in, meta remarks dropped, sentences packed to `EXTRACT_HEUR_*` sizes, subject prefixed. Only regroups the notes' own text.
+- **`notes-subject.ts`** — `cleanTopic`, `mentionsTopic`, `withSubject`, `META_ONLY`, shared by the LLM notes parser and the notes heuristic.
 - **`import.ts`** — Conversation normalization (Claude JSON, ChatGPT JSON, JSONL, plain text) + import/export.
 
 ### OpenClaw plugin (`src/openclaw/`)

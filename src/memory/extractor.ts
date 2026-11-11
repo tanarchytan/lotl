@@ -12,9 +12,11 @@
 import type { Database } from "../db.js";
 import { classifyMemory, extractPreferences, hasMemorySignal, type PatternCategory } from "./patterns.js";
 import { redactPrivate } from "./redact.js";
+import { cleanTopic, withSubject, META_ONLY } from "./notes-subject.js";
+import { notesHeuristic, notesSubject } from "./notes-heuristic.js";
 import {
   EXTRACT_CHUNK_CHARS, EXTRACT_MAX_PARTS, EXTRACT_SPEAKER_SHARE, EXTRACT_SPEAKER_LABEL_MAX,
-  EXTRACT_TOPIC_MAX_CHARS, EXTRACT_CONTEXT_TITLE_MAX,
+  EXTRACT_CONTEXT_TITLE_MAX,
 } from "../store/constants.js";
 
 /** OKF §5.2 actor. Inferred from a transcript, not asserted by the user — the
@@ -158,7 +160,38 @@ function estimateImportance(text: string, category: PatternCategory): number {
 // Heuristic extraction (zero-LLM fallback)
 // =============================================================================
 
-function extractHeuristic(text: string): ExtractedMemory[] {
+// A notes memory whose wording the patterns do not classify: label words
+// first ("Decision:", "Besluit:", "prefers"), then classifyMemory, else fact.
+const NOTES_CATEGORY: [RegExp, PatternCategory][] = [
+  [/\b(decision|decided|agreed|besluit|besloten|afgesproken|afspraak)\b/i, "decision"],
+  [/\b(prefers?|wants|voorkeur)\b/i, "preference"],
+];
+
+function notesCategory(text: string): PatternCategory {
+  const label = NOTES_CATEGORY.find(([re]) => re.test(text));
+  if (label) return label[1];
+  const c = classifyMemory(text);
+  return c === "other" || c === "reflection" ? "fact" : c;
+}
+
+/**
+ * Zero-LLM extraction. Notes (session summaries) go to notesHeuristic:
+ * subject-prefixed groups of the notes' own sentences. Speaker-turn
+ * transcripts keep the original rule: sentences that match a memory pattern.
+ * `subject` names the notes' subject for a part that has no title line
+ * (the failed-part fallback of LLM notes mode).
+ */
+export function extractHeuristic(
+  text: string,
+  style: ExtractPromptStyle = detectExtractStyle(text),
+  subject?: string | null,
+): ExtractedMemory[] {
+  if (style === "notes") {
+    return notesHeuristic(text, subject).map(t => {
+      const category = notesCategory(t);
+      return { text: t, category, importance: estimateImportance(t, category) };
+    });
+  }
   const chunks = splitIntoChunks(text);
   const memories: ExtractedMemory[] = [];
 
@@ -341,50 +374,7 @@ export function splitNotes(text: string, max: number): string[] {
   return parts;
 }
 
-// A memory that only states when/what the session was carries no fact.
-const META_ONLY = /^(the )?(session|conversation|meeting|notes?|summary|session summary|chat)\b[^.]{0,60}\b(took place|was (held|recorded|on)|is (dated|from|scheduled)|date (is|was)|happened)\b/i;
-
 const CATEGORIES = ["preference", "fact", "decision", "entity", "reflection"];
-
-/** Clean a "TOPIC: x" value; null when empty or implausibly long. */
-function cleanTopic(raw: string): string | null {
-  const t = raw.replace(/[*"`<>]/g, "")
-    .replace(/\b(session summary|session|summary|notes)\b/gi, "")
-    .replace(/\b\d{4}-\d{2}-\d{2}\b/g, "")
-    .replace(/\(\s*\)/g, "")
-    .replace(/[\s,]+$|^[\s,]+/g, "").replace(/[.:]+$/, "").replace(/\s{2,}/g, " ").trim();
-  return t.length >= 2 && t.length <= EXTRACT_TOPIC_MAX_CHARS ? t : null;
-}
-
-/**
- * True when the memory already names the topic: the whole topic, or its
- * head word (first word that is >= 3 chars or has a digit / inner capital),
- * so "Zitadel on VPS01" is satisfied by "Zitadel ...", "lotl memory recall"
- * by "lotl ...", but not by a memory that only says "recall hook".
- */
-function mentionsTopic(text: string, topic: string): boolean {
-  const t = text.toLowerCase();
-  if (t.includes(topic.toLowerCase())) return true;
-  const head = topic.split(/[\s/,()]+/)
-    .map(w => w.replace(/[^\p{L}\p{N}._-]/gu, ""))
-    .find(w => (w.length >= 3 || /\d|[A-Z]/.test(w.slice(1))) && !TOPIC_STOP.has(w.toLowerCase()));
-  return head ? t.includes(head.toLowerCase()) : false;
-}
-
-/**
- * Prefix the subject a small model left out: "project, topic: text" when the
- * memory names neither, "project: text" when it names the topic only, and
- * nothing when it already names the project.
- */
-function withSubject(text: string, project: string | null, topic: string | null): string {
-  if (project && mentionsTopic(text, project)) return text;
-  const needTopic = topic && !mentionsTopic(text, topic) && !(project && mentionsTopic(topic, project));
-  const parts = [project, needTopic ? topic : null].filter(Boolean);
-  if (!project && !needTopic) return text;
-  return parts.length ? `${parts.join(", ")}: ${text}` : text;
-}
-
-const TOPIC_STOP = new Set(["session", "notes", "summary", "project", "system", "with", "from", "the", "and"]);
 
 /**
  * "[category] text" records. Conversation style: one line each (unchanged
@@ -527,7 +517,8 @@ async function extractWithLLM(text: string): Promise<ExtractedMemory[] | null> {
       }
     }
     if (!answered) return null;
-    for (const part of failed) add(extractHeuristic(part));
+    const subject = failed.length ? notesSubject(text) : null;
+    for (const part of failed) add(extractHeuristic(part, "notes", subject));
     return memories;
   } catch {
     return null;

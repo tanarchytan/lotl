@@ -334,3 +334,119 @@ timeout with retries, so a hung server slows `memory_extract` and stores.
   should fix them.
 - The `--min-relevance` flag name was lost in one `llm`-mode merge (u1) without the `keep`
   labels noticing; merge quality is only partly covered by rule.
+
+## Heuristic extraction
+
+Added 2026-11-11, after the study above. Without an LLM, `extractAndStore` falls back to
+`extractHeuristic`. Before this change that kept only sentences matching the chat-style
+patterns in `patterns.ts` ("I prefer", "we decided"), which session notes almost never
+use: 6/106 required facts on dev. Notes input now goes to `src/memory/notes-heuristic.ts`;
+speaker-turn transcripts (`detectExtractStyle`) keep the old rule. No LLM is involved
+anywhere in this section.
+
+Same harness and metric definitions as section 3 (`run.mts extract --mode heuristic`, stub
+store). "Before" was re-run from a `git archive HEAD` copy of `src/` (identical to the
+earlier "Heuristic" rows). Tuned on dev only. Held-out was run once with the final rules (the long held-out input
+twice, same code, same result). After that, two words were removed from the filler list
+for a reason unrelated to the scores; dev and held-out were re-run once to confirm the
+memories are identical, and they are. Nothing was tuned after the held-out run.
+Set hashes unchanged (`a2e88c030a62`).
+
+| Split | Version | Recall of required facts | Standalone | Unsupported (rule) | Forbidden | Filler | Memories / input |
+|---|---|---|---|---|---|---|---|
+| dev (16) | before | 6/106 (5.7%) | 3/7 | 0/7 | 0 | 0/7 | 0.4 |
+| dev (16) | after | **106/106 (100%)** | 76/76 | 0/76 | 0 | 0/76 | 4.8 |
+| held-out (8) | before | 2/58 (3.4%) | 1/2 | 0/2 | 0 | 0/2 | 0.3 |
+| held-out (8) | after | **57/58 (98.3%)** | 38/40 (95.0%) | 0/40 | 1 (0 *) | 0/40 | 5.0 |
+| dev, long (`--concat`, 2) | before | 6/87 | 3/6 | 0/6 | 0 | 0/6 | 3.0 |
+| dev, long (`--concat`, 2) | after | 83/87 (95.4%) | 61/61 | 0/61 | 0 | 0/61 | 30.5 |
+| held-out, long (1) | before | 2/58 | 1/2 | 0/2 | 0 | 0/2 | 2.0 |
+| held-out, long (1) | after | 57/58 | 43/43 | 0/43 | 1 (0 *) | 0/43 | 43.0 |
+
+\* The forbidden-label false positive described in section 3 (a forbidden regex that also
+matches the correct negated sentence). The heuristic copies that sentence verbatim.
+
+For comparison, the notes prompt with E2B (section 3): 102/106 at 6.9 per input on dev,
+51/58 at 8.1 on held-out; long inputs 77/87 and 50/58. Duplicate pairs 0 in every heuristic
+run.
+
+Read this recall with care. Unsupported is 0 by construction: every memory is the notes'
+own text plus a subject prefix taken from the notes. But the memories are longer than the
+model's (mean 145 chars on dev, longest 346, prefix included), and on these dense
+summaries the heuristic keeps nearly everything: 1817 of 1903 source word tokens on dev
+appear in some memory (diagnostic, not one of the defined metrics). The gain over the old
+rule comes from segmentation and the subject prefix, not from picking the important
+sentences. Volume stays below the notes prompt because adjacent short sentences, lists
+and table rows are grouped.
+
+### Rules
+
+1. Title: a first line `PROJECT: x`, a first-line heading, or a first sentence of at most
+   8 words (dates and brackets left out) that has a notes word (session, summary, notes,
+   handoff, sessie, ...) or ends in a date, and does not start with an article or
+   pronoun. Generic words are trimmed from its comma segments; the first segment left is
+   the subject. The title is not stored. No title: a capitalised name that occurs at
+   least twice is the subject.
+2. Blocks at headings (heading text becomes the topic) and blank lines.
+3. Pieces: sentences, list items, table rows. A list is joined to a lead-in line ending
+   in `:`; a table row to its header row. Code fence lines are dropped.
+4. Dropped pieces: `META_ONLY`, thanks and similar remarks about the session without a
+   number or identifier, and pieces under 20 chars without one.
+5. Packing: adjacent pieces of a block are joined while the memory stays under 160
+   chars; a piece opening with a back-reference (That, It, So, He, Dat, Hij, ...) stays
+   with the one before up to 360 chars; one sentence over 360 is cut at `; `, then `, `.
+6. Memories with no informative token (number, path, file name, snake/camel/ALLCAPS or
+   hyphenated identifier, flag, backtick), no rule word (decision, prefer, never, not,
+   besluit, niet, nog niet, ...) and no name used elsewhere in the notes are dropped. At
+   most 16 per 2500 chars of notes are kept, highest count of such signals first,
+   then restored to note order.
+7. `withSubject` (shared with the LLM notes parser, now in `notes-subject.ts`) prefixes
+   subject and topic when the memory lacks them. Category: label words (Decision,
+   Besluit, prefers) first, then `classifyMemory`, else `fact`.
+
+The same function is the fallback for a failed part in LLM notes mode; it now receives
+the subject from the whole note's title, since a later part has none.
+
+### What was tried
+
+Sweep on dev, final rules, packing target x per-part cap (hard cap 360 throughout):
+
+| Packing target | Cap per 2500 chars | Recall | Memories / input | Mean length |
+|---|---|---|---|---|
+| 0 (one sentence each) | 16 | 102/106 | 5.3 | 130 |
+| 120 | 16 | 103/106 | 5.1 | 134 |
+| **160** | **16** | **106/106** | **4.8** | **145** |
+| 160 | 12 | 104/106 | 4.6 | 147 |
+| 160 | 8 | 100/106 | 4.3 | 146 |
+| 200 | 16 | 106/106 | 4.3 | 159 |
+| 240 | 16 | 106/106 | 3.7 | 183 |
+| 320 | 16 | 106/106 | 3.1 | 213 |
+
+- Packing past 160 buys no recall here, only longer memories; below 160 it splits facts
+  whose rule and value sit in adjacent sentences. Recall stops paying at about 160.
+- The cap only binds on the longest dev input (about 2.3k chars, 15 memories kept at
+  16): 12 loses 2 facts there, 8 loses 6. Ranking by signal count cannot tell which
+  sentence of a dense summary matters, so a tighter cap trades facts one for one.
+- An earlier version cut every sentence at the packing target (no separate hard cap):
+  at 120 chars it fell to 90/106 by splitting sentences at commas.
+- The informativeness filter (rule 6) dropped real facts in its first form (three dev
+  sentences with a plain-word name or a hyphenated identifier and no number); adding
+  hyphenated identifiers and names used elsewhere in the notes brought that to zero
+  drops on dev. On these sets the filter removes nothing; it acts on whole packed memories,
+  so it only drops a paragraph with no number, identifier, rule word or name.
+- Back-reference gluing fixed pronoun-only memories (a sentence starting "He ..." stored alone) that the
+  standalone metric flagged.
+
+### What it still misses
+
+- A fact split over two memories at a packing boundary: one held-out fact (a rule and
+  its condition in neighbouring sentences); 4 of 87 on the long dev input.
+- A title it does not recognise (a date in the middle, no notes word): the memories get no
+  subject. Two held-out memories, both from one input.
+- Selection. The heuristic cannot tell routine status from a decision, so on chattier
+  notes it will store more than a model would. Not measured: the set has one trivial
+  input (0 memories, correct) and no chatty ones.
+- Conversation-style input is unchanged and was not measured: every input of this set
+  detects as notes, and no labelled transcript set is local. A one-line chat such as
+  `User: ... Assistant: ...` (one prefix, no repeated speaker) detects as notes and now
+  gets the notes heuristic.
