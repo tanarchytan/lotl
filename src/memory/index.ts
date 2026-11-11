@@ -18,16 +18,17 @@ import { chunkDocument } from "../store/chunking.js";
 import { isOverBudget, compactMemoryText, BODY_MAX } from "../okf/budget.js";
 import { DEFAULT_ACTOR } from "../okf/concept.js";
 import { redactPrivate } from "./redact.js";
+import { memoryRowHash, metadataOriginal } from "./hash.js";
 import {
   STRONG_SIGNAL_MIN_SCORE, STRONG_SIGNAL_MIN_GAP,
   MEMORY_FTS_OVERFETCH, MEMORY_VEC_K_MULTIPLIER,
   MEMORY_RERANK_BLEND_ORIGINAL, MEMORY_RERANK_BLEND_RERANK,
   MEMORY_RRF_K, MEMORY_RRF_W_BM25, MEMORY_RRF_W_VEC, MEMORY_RRF_W_TIME,
-} from "../store/constants.js";
-
   MEMORY_RELEVANCE_MIN_TERMS,
-// =============================================================================
+} from "../store/constants.js";
 import { assertMinRelevance, filterByRelevance, informativeTerms } from "./relevance.js";
+
+// =============================================================================
 // Embedding LRU cache — avoids redundant API calls for repeated text
 // From Mastra: keyed by content hash, 100 entry max
 // =============================================================================
@@ -182,8 +183,6 @@ export type MemoryRecallOptions = {
   tier?: MemoryTier | MemoryTier[];
   limit?: number;
   rerank?: boolean;
-};
-
   /**
    * Opt-in absolute relevance gate in (0, 1]. When set, a memory is kept
    * only if its text covers at least this IDF-weighted share of the
@@ -193,6 +192,8 @@ export type MemoryRecallOptions = {
    * leaves recall unchanged. Suggested value: 0.6.
    */
   minRelevance?: number;
+};
+
 export type MemoryRecallResult = {
   id: string;
   text: string;
@@ -213,13 +214,8 @@ export type MemoryUpdateOptions = {
   metadata?: Record<string, unknown>;
 };
 
-// =============================================================================
-// Content hash for fast dedup
-// =============================================================================
-
-function contentHash(text: string): string {
-  return createHash("md5").update(text.trim().toLowerCase()).digest("hex");
-}
+// Content hash for fast dedup lives in ./hash.ts (memoryRowHash): it hashes
+// the full text a row can give back, never the OKF-compacted body.
 
 // =============================================================================
 // Stop words for keyword boost (from MemPalace benchmarks)
@@ -593,16 +589,26 @@ export function ensureScopePartitions(db: Database, dimensions: number, scopes: 
 // Cosine dedup check
 // =============================================================================
 
+/**
+ * Nearest existing memory at or above `threshold`, for cosine dedup.
+ *
+ * Skips OKF-compacted rows (those with `metadata.original`): their vector is
+ * of the compacted body, so a high score says the heads match, not that the
+ * full texts do. Also skips vectors whose memory row is gone, so a stale
+ * vector can never turn a store into a "duplicate" of nothing.
+ */
 function findSimilarMemory(db: Database, embedding: number[], threshold: number = 0.9): { id: string; score: number } | null {
   try {
     const results = db.prepare(
       `SELECT id, distance FROM memories_vec WHERE embedding MATCH ? AND k = 5`
     ).all(new Float32Array(embedding)) as { id: string; distance: number }[];
+    const metaOf = db.prepare(`SELECT metadata FROM memories WHERE id = ?`);
     for (const r of results) {
       const similarity = 1 - r.distance;
-      if (similarity >= threshold) {
-        return { id: r.id, score: similarity };
-      }
+      if (similarity < threshold) continue;
+      const row = metaOf.get(r.id) as { metadata: string | null } | undefined;
+      if (!row || metadataOriginal(row.metadata)) continue;
+      return { id: r.id, score: similarity };
     }
   } catch {
     // memories_vec may not exist yet
@@ -632,10 +638,19 @@ export async function memoryStore(
   if (!text) throw new Error("Memory text is empty after redacting <private> content");
 
   // OKF progressive disclosure: compact over-budget text before it is
-  // hashed/embedded/stored, so dedup + the vector index reflect the
-  // caveman-compressed body. The one-liner summary rides along in
-  // metadata.description, the full text in metadata.original so okf_get can
-  // serve it on demand. Gate lets callers/tests opt out.
+  // embedded/stored, so recall and the vector index see the caveman-compressed
+  // body. The one-liner summary rides along in metadata.description, the full
+  // (already redacted) text in metadata.original so okf_get can serve it on
+  // demand. Gate lets callers/tests opt out.
+  //
+  // Dedup invariant: a store may only answer "duplicate" when the full
+  // incoming text is already recoverable from the existing row. So
+  //  - exact dedup hashes the FULL text (memoryRowHash: metadata.original when
+  //    present, else text), never the compacted body: two long memories that
+  //    share a head have the same body but different hashes;
+  //  - cosine dedup is skipped when this memory was compacted, and never
+  //    matches a compacted row (findSimilarMemory), because body similarity
+  //    says nothing about the full texts. Such a store is kept as a new row.
   let metadata: Record<string, unknown> = { ...(options.metadata ?? {}), actor: options.actor ?? DEFAULT_ACTOR };
   if (process.env.LOTL_OKF !== "off" && isOverBudget(text)) {
     const original = text;
@@ -645,8 +660,9 @@ export async function memoryStore(
     // load-bearing specific, so recall flags it rather than presenting it as fact.
     metadata = { ...metadata, description, original, ...(lowConfidence ? { status: "draft" } : {}) };
   }
+  const compacted = metadataOriginal(metadata) !== null;
 
-  const hash = contentHash(text);
+  const hash = memoryRowHash(text, metadata);
   const category = options.category || classifyMemory(text);
   const scope = options.scope || "global";
   const importance = Math.max(0, Math.min(1, options.importance ?? 0.5));
@@ -665,8 +681,10 @@ export async function memoryStore(
   // Embed for vector dedup + storage
   const embedding = await embedText(text);
 
-  // Cosine dedup: near-duplicate check
-  if (embedding) {
+  // Cosine dedup: near-duplicate check. Only between two uncompacted texts
+  // (see the invariant above), so the LLM conflict resolution below always
+  // compares and merges full texts.
+  if (embedding && !compacted) {
     const similar = findSimilarMemory(db, embedding, 0.9);
     if (similar) {
       // Try LLM conflict resolution if available (from Mem0 pattern)
@@ -674,7 +692,7 @@ export async function memoryStore(
         const { getRemoteLLM } = await import("./index.js").then(() => import("../remote-config.js"));
         const remote = getRemoteLLM();
         if (remote) {
-          const existingMem = db.prepare(`SELECT text FROM memories WHERE id = ?`).get(similar.id) as { text: string } | null;
+          const existingMem = db.prepare(`SELECT text, metadata FROM memories WHERE id = ?`).get(similar.id) as { text: string; metadata: string | null } | null;
           if (existingMem) {
             const prompt = `Compare these two memory statements and decide the action:\n\nExisting: "${existingMem.text}"\nNew: "${text}"\n\nRespond with exactly one word: ADD (new fact), UPDATE (merge into existing), DELETE (contradicts existing), or NONE (duplicate).`;
             const decision = await remote.chatComplete(prompt);
@@ -682,7 +700,7 @@ export async function memoryStore(
             if (action === "UPDATE") {
               const merged = await remote.chatComplete(`Merge these into one concise statement:\n1. "${existingMem.text}"\n2. "${text}"\n\nRespond with only the merged statement.`);
               if (merged && merged.length > 10) {
-                db.prepare(`UPDATE memories SET text = ?, content_hash = ?, last_accessed = ? WHERE id = ?`).run(merged.trim(), contentHash(merged.trim()), now, similar.id);
+                db.prepare(`UPDATE memories SET text = ?, content_hash = ?, last_accessed = ? WHERE id = ?`).run(merged.trim(), memoryRowHash(merged.trim(), existingMem.metadata), now, similar.id);
                 db.prepare(`INSERT INTO memory_history (memory_id, action, old_value, new_value, timestamp) VALUES (?, 'UPDATE', ?, ?, ?)`).run(similar.id, existingMem.text, merged.trim(), now);
                 return { id: similar.id, status: "duplicate", duplicate_id: similar.id };
               }
@@ -748,6 +766,10 @@ export async function memoryStoreFromTurns(
   return memoryStore(db, { ...options, turns });
 }
 
+/** Rows (or hashes) per multi-VALUES / IN statement in memoryStoreBatch.
+ *  500 × 8 params stays far below SQLite's 32766 bound-parameter cap. */
+const BATCH_SQL_SLICE = 500;
+
 /**
  * Batch insert memories with shared embedding round-trip.
  *
@@ -780,6 +802,7 @@ export async function memoryStoreBatch(
   // deterministic).
   const expanded: MemoryStoreOptions[] = [];
   const expandedOriginIdx: number[] = [];
+  const chunkIdx = new Set<number>(); // expanded rows that are chunks of a split item
   const CHUNK_MAX_CHARS = 1536; // ≈ 512 tokens at 3 chars/token (mxbai-xs window)
   for (let i = 0; i < items.length; i++) {
     const raw = items[i]!;
@@ -812,6 +835,7 @@ export async function memoryStoreBatch(
           text: chunk.text,
           metadata: { ...baseMeta, chunk_seq: c, chunk_pos: chunk.pos },
         });
+        chunkIdx.add(expanded.length - 1);
         expandedOriginIdx.push(i);
       }
     } else {
@@ -825,16 +849,30 @@ export async function memoryStoreBatch(
   // end: for a chunked input, the original item gets the first chunk's id.
   const results: { id: string; status: "created" | "duplicate" }[] = new Array(expanded.length);
 
-  // Phase 1: hash dedup (single round-trip) — operates on the expanded set
-  const hashes = expanded.map(it => contentHash((it.text ?? "").trim()));
-  const placeholders = hashes.map(() => "?").join(",");
-  const existingRows = db.prepare(
-    `SELECT id, content_hash FROM memories WHERE content_hash IN (${placeholders})`
-  ).all(...hashes) as { id: string; content_hash: string }[];
-  const existingByHash = new Map(existingRows.map(r => [r.content_hash, r.id]));
+  // Phase 1: hash dedup — operates on the expanded set. The IN list is sliced
+  // so a large batch stays under SQLite's bound-parameter limit (32766).
+  // Same row hash as memoryStore: an item that carries metadata.original (an
+  // imported compacted row) hashes its full original, so it dedups against
+  // the same text stored by memoryStore and vice versa.
+  // A chunk hashes its own text: a metadata.original it inherited from the
+  // split item covers the whole item, and would collapse every chunk into one.
+  const hashes = expanded.map((it, i) =>
+    memoryRowHash((it.text ?? "").trim(), chunkIdx.has(i) ? null : it.metadata));
+  const existingByHash = new Map<string, string>();
+  for (let s = 0; s < hashes.length; s += BATCH_SQL_SLICE) {
+    const slice = hashes.slice(s, s + BATCH_SQL_SLICE);
+    const existingRows = db.prepare(
+      `SELECT id, content_hash FROM memories WHERE content_hash IN (${slice.map(() => "?").join(",")})`
+    ).all(...slice) as { id: string; content_hash: string }[];
+    for (const r of existingRows) existingByHash.set(r.content_hash, r.id);
+  }
 
-  // Phase 2: collect texts that need embedding (operates on the EXPANDED set)
+  // Phase 2: collect texts that need embedding (operates on the EXPANDED set).
+  // A text repeated inside the batch is stored once; later copies resolve to
+  // the first copy's id once ids are assigned below.
   const toEmbed: { idx: number; text: string }[] = [];
+  const firstIdxByHash = new Map<string, number>();
+  const inBatchDupOf = new Map<number, number>();
   for (let i = 0; i < expanded.length; i++) {
     const text = (expanded[i]!.text ?? "").trim();
     if (!text) {
@@ -846,6 +884,12 @@ export async function memoryStoreBatch(
       results[i] = { id: existingId, status: "duplicate" };
       continue;
     }
+    const firstIdx = firstIdxByHash.get(hashes[i]!);
+    if (firstIdx !== undefined) {
+      inBatchDupOf.set(i, firstIdx);
+      continue;
+    }
+    firstIdxByHash.set(hashes[i]!, i);
     toEmbed.push({ idx: i, text });
   }
 
@@ -913,27 +957,36 @@ export async function memoryStoreBatch(
   }
   const touch = db.prepare(`UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?`);
 
+  // In-batch repeats point at the copy that is being inserted.
+  const idByIdx = new Map(rows.map(r => [r.idx, r.id]));
+  for (const [dupIdx, firstIdx] of inBatchDupOf) {
+    results[dupIdx] = { id: idByIdx.get(firstIdx) ?? "", status: "duplicate" };
+  }
+
   const txn = db.transaction(() => {
     if (rows.length > 0) {
-      // Multi-value INSERT into memories — one SQL statement, one round-trip,
-      // one parser pass instead of N. better-sqlite3 binds positional ? markers.
+      // Multi-value INSERT into memories — one statement per slice instead of
+      // one per row. Sliced so a large batch stays under SQLite's
+      // bound-parameter limit (8 params per row, 32766 max).
       const memCols = "(id, text, content_hash, category, scope, importance, tier, access_count, created_at, metadata)";
       const memTuple = "(?, ?, ?, ?, ?, ?, 'peripheral', 0, ?, ?)";
-      const memValues = rows.map(() => memTuple).join(",");
-      const memParams: any[] = [];
-      for (const r of rows) {
-        memParams.push(r.id, r.text, r.contentHash, r.category, r.scope, r.importance, now, r.metadataJson);
+      for (let s = 0; s < rows.length; s += BATCH_SQL_SLICE) {
+        const slice = rows.slice(s, s + BATCH_SQL_SLICE);
+        const memParams: any[] = [];
+        for (const r of slice) {
+          memParams.push(r.id, r.text, r.contentHash, r.category, r.scope, r.importance, now, r.metadataJson);
+        }
+        db.prepare(`INSERT INTO memories ${memCols} VALUES ${slice.map(() => memTuple).join(",")}`).run(...memParams);
       }
-      db.prepare(`INSERT INTO memories ${memCols} VALUES ${memValues}`).run(...memParams);
 
       // Multi-value INSERT into memory_history — only for rows that didn't opt out.
       const histRows = rows.filter(r => !r.skipHistory);
-      if (histRows.length > 0) {
-        const histTuple = "(?, 'ADD', ?, ?)";
-        const histValues = histRows.map(() => histTuple).join(",");
+      const histTuple = "(?, 'ADD', ?, ?)";
+      for (let s = 0; s < histRows.length; s += BATCH_SQL_SLICE) {
+        const slice = histRows.slice(s, s + BATCH_SQL_SLICE);
         const histParams: any[] = [];
-        for (const r of histRows) histParams.push(r.id, r.text, now);
-        db.prepare(`INSERT INTO memory_history (memory_id, action, new_value, timestamp) VALUES ${histValues}`).run(...histParams);
+        for (const r of slice) histParams.push(r.id, r.text, now);
+        db.prepare(`INSERT INTO memory_history (memory_id, action, new_value, timestamp) VALUES ${slice.map(() => histTuple).join(",")}`).run(...histParams);
       }
 
       // vec0 inserts — sqlite-vec doesn't support multi-VALUES because each
@@ -1163,6 +1216,14 @@ export async function memoryRecall(
 
   const query = options.query.trim();
   if (!query) return [];
+  // Opt-in relevance gate: decided before any retrieval work so a prompt
+  // with too few informative terms costs nothing.
+  let gateTerms: string[] | null = null;
+  if (options.minRelevance !== undefined) {
+    assertMinRelevance(options.minRelevance);
+    gateTerms = informativeTerms(query);
+    if (gateTerms.length < MEMORY_RELEVANCE_MIN_TERMS) return [];
+  }
   const limit = options.limit || 10;
   const scope = options.scope;
   const category = options.category;
@@ -1220,14 +1281,6 @@ export async function memoryRecall(
     for (const e of expandEntities.slice(0, 2)) {
       const sub = expandKeywords ? `${expandKeywords} ${e}` : e;
       if (sub !== query && !subQueries.includes(sub)) subQueries.push(sub);
-  // Opt-in relevance gate: decided before any retrieval work so a prompt
-  // with too few informative terms costs nothing.
-  let gateTerms: string[] | null = null;
-  if (options.minRelevance !== undefined) {
-    assertMinRelevance(options.minRelevance);
-    gateTerms = informativeTerms(query);
-    if (gateTerms.length < MEMORY_RELEVANCE_MIN_TERMS) return [];
-  }
     }
   } else if (EXPAND_MODE === "keywords") {
     // Split the top keywords into N groups and build a sub-query per group.
@@ -1710,6 +1763,12 @@ export async function memoryRecall(
     }
   }
 
+  // 5b3. Opt-in relevance gate: drop candidates whose text does not cover
+  // enough of the prompt, before the limit cut so deeper hits can surface.
+  if (gateTerms) {
+    sorted = filterByRelevance(db, gateTerms, sorted, options.minRelevance!);
+  }
+
   // 5c. Dialog-aware diversity (v16). Greedy MMR-lite reshuffles top-limit
   // to prefer unseen source_dialog_id / source_session_id, covering more
   // evidence dialogs in multi-evidence queries.
@@ -1767,12 +1826,6 @@ export async function memoryRecall(
  * Cost: one extra chatComplete call per question. Cache-friendly if
  * LOTL_LLM_CACHE_PATH is set.
  */
-  // 5b3. Opt-in relevance gate: drop candidates whose text does not cover
-  // enough of the prompt, before the limit cut so deeper hits can surface.
-  if (gateTerms) {
-    sorted = filterByRelevance(db, gateTerms, sorted, options.minRelevance!);
-  }
-
 export async function memoryReflect(
   question: string,
   memories: Array<{ text: string }>,
@@ -2080,9 +2133,15 @@ export async function memoryUpdate(
   const now = Date.now();
   const changes: string[] = [];
 
+  // content_hash follows the row's full text: metadata.original when the row
+  // keeps one (after this update), else text. Recomputed whenever text or
+  // metadata changes, so `memory compact` (body in text, full text moved to
+  // metadata.original) keeps the hash of the full text it started from.
+  const finalMetadata = options.metadata !== undefined ? options.metadata : mem.metadata;
+
   if (options.text !== undefined && options.text !== mem.text) {
     const newText = options.text.trim();
-    const newHash = contentHash(newText);
+    const newHash = memoryRowHash(newText, finalMetadata);
     db.prepare(`UPDATE memories SET text = ?, content_hash = ? WHERE id = ?`).run(newText, newHash, options.id);
     db.prepare(`INSERT INTO memory_history (memory_id, action, old_value, new_value, timestamp) VALUES (?, 'UPDATE', ?, ?, ?)`).run(options.id, mem.text, newText, now);
 
@@ -2108,6 +2167,11 @@ export async function memoryUpdate(
 
   if (options.metadata !== undefined) {
     db.prepare(`UPDATE memories SET metadata = ? WHERE id = ?`).run(JSON.stringify(options.metadata), options.id);
+    // A metadata-only change can add or drop metadata.original.
+    if (!changes.includes("text")) {
+      const newHash = memoryRowHash(mem.text, options.metadata);
+      if (newHash !== mem.content_hash) db.prepare(`UPDATE memories SET content_hash = ? WHERE id = ?`).run(newHash, options.id);
+    }
     changes.push("metadata");
   }
 

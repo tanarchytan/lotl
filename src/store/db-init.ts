@@ -4,6 +4,7 @@
 
 import { loadSqliteVec } from "../db.js";
 import type { Database } from "../db.js";
+import { memoryRowHash, metadataOriginal } from "../memory/hash.js";
 
 function createSqliteVecUnavailableError(reason: string): Error {
   return new Error(
@@ -252,13 +253,16 @@ export function initializeDatabase(db: Database): void {
       DELETE FROM memories_fts WHERE rowid = old.rowid;
     END
   `);
-  db.exec(`
-    CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
-      DELETE FROM memories_fts WHERE rowid = old.rowid;
-      INSERT INTO memories_fts(rowid, text, category, scope)
-      VALUES (new.rowid, new.text, new.category, new.scope);
-    END
-  `);
+  db.exec(`CREATE TRIGGER IF NOT EXISTS ${MEMORIES_AU_TRIGGER_SQL}`);
+
+  // Non-fatal: a hash left on the old (body) basis only costs a missed exact
+  // dedup, never data, and the watermark retries it on the next open. Failing
+  // the open (busy lock past the timeout, read-only file) would cost more.
+  try {
+    migrateMemoryHashesToFullText(db);
+  } catch (err) {
+    process.stderr.write(`lotl: memory hash migration skipped (will retry next open): ${getErrorMessage(err)}\n`);
+  }
 
   // Memory changelog -- audit trail for memory operations
   db.exec(`
@@ -298,6 +302,80 @@ export function initializeDatabase(db: Database): void {
   // Add scope column for multi-agent isolation (migration-safe)
   try { db.exec(`ALTER TABLE knowledge ADD COLUMN scope TEXT NOT NULL DEFAULT 'global'`); } catch {}
   db.exec(`CREATE INDEX IF NOT EXISTS idx_knowledge_scope ON knowledge(scope)`);
+}
+
+/** Body of the memories_au trigger, shared by the schema setup and the
+ *  hash migration (which drops it for the duration of its UPDATE). */
+const MEMORIES_AU_TRIGGER_SQL = `memories_au AFTER UPDATE ON memories BEGIN
+      DELETE FROM memories_fts WHERE rowid = old.rowid;
+      INSERT INTO memories_fts(rowid, text, category, scope)
+      VALUES (new.rowid, new.text, new.category, new.scope);
+    END`;
+
+/** store_config key holding the highest memories rowid already checked. */
+const HASH_MIGRATION_KEY = "memories_hash_full_text_rowid";
+
+/**
+ * Migration: OKF-compacted memories written by older builds carry the hash of
+ * their compacted body. Recompute it from metadata.original (memoryRowHash)
+ * so exact dedup compares full texts.
+ *
+ * - Watermarked, not one-shot: store_config keeps the highest rowid checked.
+ *   An open with no new rows costs two indexed lookups. Rows added later by
+ *   a still-running older process (an MCP server or plugin not yet
+ *   restarted after an upgrade) are picked up on the next open.
+ *   Re-running is harmless: same input, same hash.
+ * - content_hash only has a plain (non-unique) index, so two rows whose
+ *   originals are identical simply end up with the same hash. Nothing is
+ *   deleted or merged; a later store of that text dedups to one of them.
+ * - memories_au fires on every UPDATE and would delete + reinsert the FTS row
+ *   of each touched memory. The text does not change, so the trigger is
+ *   dropped and recreated around the UPDATE inside one transaction. Vectors
+ *   are not touched.
+ */
+export function migrateMemoryHashesToFullText(db: Database): { checked: number; updated: number } {
+  const readMark = () => {
+    const row = db.prepare(`SELECT value FROM store_config WHERE key = ?`).get(HASH_MIGRATION_KEY) as { value: string } | undefined;
+    return row ? Number(row.value) || 0 : 0;
+  };
+  const maxRowid = () => (db.prepare(`SELECT max(rowid) AS m FROM memories`).get() as { m: number | null }).m ?? 0;
+  if (maxRowid() <= readMark()) return { checked: 0, updated: 0 };
+
+  // BEGIN IMMEDIATE: take the write lock before reading, so two processes
+  // opening the same index at once do the work once and never race on the
+  // watermark. (The Database interface does not expose better-sqlite3's
+  // transaction().immediate(), hence the explicit BEGIN/COMMIT.)
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const mark = readMark();
+    const top = maxRowid();
+    if (top <= mark) { db.exec("COMMIT"); return { checked: 0, updated: 0 }; }
+    // LIKE prefilter keeps the JSON parse to rows that can have an original.
+    const rows = db.prepare(
+      `SELECT rowid, text, content_hash, metadata FROM memories
+       WHERE rowid > ? AND rowid <= ? AND metadata LIKE '%"original"%'`
+    ).all(mark, top) as { rowid: number; text: string; content_hash: string; metadata: string | null }[];
+    const changed: { rowid: number; hash: string }[] = [];
+    for (const r of rows) {
+      if (!metadataOriginal(r.metadata)) continue;
+      const hash = memoryRowHash(r.text, r.metadata);
+      if (hash !== r.content_hash) changed.push({ rowid: r.rowid, hash });
+    }
+    if (changed.length > 0) {
+      db.exec(`DROP TRIGGER IF EXISTS memories_au`);
+      const upd = db.prepare(`UPDATE memories SET content_hash = ? WHERE rowid = ?`);
+      for (const c of changed) upd.run(c.hash, c.rowid);
+      db.exec(`CREATE TRIGGER ${MEMORIES_AU_TRIGGER_SQL}`);
+    }
+    db.prepare(
+      `INSERT INTO store_config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+    ).run(HASH_MIGRATION_KEY, String(top));
+    db.exec("COMMIT");
+    return { checked: rows.length, updated: changed.length };
+  } catch (err) {
+    try { db.exec("ROLLBACK"); } catch { /* already rolled back */ }
+    throw err;
+  }
 }
 
 export function ensureVecTableInternal(db: Database, dimensions: number): void {

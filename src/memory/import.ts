@@ -204,6 +204,18 @@ type ExportedMemory = {
   metadata?: string | null;
 };
 
+/** Exported `metadata` is the raw JSON column; tolerate null, objects and junk. */
+function parseExportedMetadata(raw: unknown): Record<string, unknown> | undefined {
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as Record<string, unknown>;
+  if (typeof raw !== "string" || !raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function exportMemories(db: Database, filePath: string): number {
   const memories = db.prepare(`SELECT text, category, scope, importance, created_at, metadata FROM memories`).all() as ExportedMemory[];
   writeFileSync(filePath, JSON.stringify(memories, null, 2), "utf-8");
@@ -222,12 +234,21 @@ export async function importMemories(
   // Use batched store for bulk import — single embedding round-trip + transaction.
   // ~3-5x faster than per-memory store loop.
   const storeBatch = await getMemoryStoreBatch();
-  const items = memories.map(mem => ({
-    text: mem.text,
-    category: mem.category as any,
-    scope: mem.scope,
-    importance: mem.importance,
-  }));
+  // Carry exported metadata through: it holds the OKF pre-compaction
+  // original, verifications, draft status and the actor. Dropping it made a
+  // backup/restore round trip lose the full text of every compacted memory.
+  const items = memories.map(mem => {
+    const metadata = parseExportedMetadata(mem.metadata);
+    const actor = typeof metadata?.actor === "string" ? metadata.actor : undefined;
+    return {
+      text: mem.text,
+      category: mem.category as any,
+      scope: mem.scope,
+      importance: mem.importance,
+      ...(metadata ? { metadata } : {}),
+      ...(actor ? { actor } : {}),
+    };
+  });
 
   try {
     const results = await storeBatch(db, items);
@@ -240,13 +261,8 @@ export async function importMemories(
     const store = await getMemoryStore();
     let imported = 0;
     let duplicates = 0;
-    for (const mem of memories) {
-      const result = await store(db, {
-        text: mem.text,
-        category: mem.category as any,
-        scope: mem.scope,
-        importance: mem.importance,
-      });
+    for (const item of items) {
+      const result = await store(db, item);
       if (result.status === "created") imported++;
       else duplicates++;
     }
